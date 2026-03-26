@@ -19,7 +19,7 @@ repos:
       - id: forbid-new-submodules
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.9.0
+    rev: v0.15.8
     hooks:
       - id: ruff
         name: ruff (lint)
@@ -27,15 +27,14 @@ repos:
       - id: ruff-format
         name: ruff (format)
 
-  - repo: https://github.com/astral-sh/ty-pre-commit
-    rev: v0.9.0
+  - repo: local
     hooks:
       - id: ty
         name: ty (type check)
-        args: [--strict]
+        entry: uv run ty check
+        language: system
+        types: [python]
 
-  - repo: local
-    hooks:
       - id: pytest
         name: pytest
         entry: uv run pytest
