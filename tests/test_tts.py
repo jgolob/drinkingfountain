@@ -217,6 +217,149 @@ class TestPiperTTSBackend:
                 backend.generate_audio("Second", "cached_voice")
                 assert mock_load.call_count == 1  # Still 1
 
+    def test_generate_audio_with_chunking(self, tmp_path: Path) -> None:
+        """Test that long text is chunked and synthesized in pieces."""
+        voices_dir = tmp_path / "voices"
+        voices_dir.mkdir()
+        voice_file = voices_dir / "test_voice.onnx"
+        voice_file.write_text("fake model content")
+
+        # Create a backend with a small max_text_length to force chunking
+        backend = PiperTTSBackend(voices_dir=voices_dir, max_text_length=50)
+
+        mock_voice = MagicMock()
+
+        def synthesize_side_effect(text: str, wav_file) -> None:
+            """Simulate writing WAV data to the wave file."""
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(24000)
+            wav_file.writeframes(b"\x00\x00" * 100)
+
+        mock_voice.synthesize_wav.side_effect = synthesize_side_effect
+        with patch(
+            "drinkingfountain.tts.piper.PiperVoice.load", return_value=mock_voice
+        ):
+            # Create a long text (> 50 chars) that will be chunked
+            long_text = (
+                "This is a very long text that exceeds the maximum chunk size and should be split into multiple pieces for synthesis. "
+                * 2
+            )
+            assert len(long_text) > 50
+
+            # Create enough mock audios for all chunks (use same mock for all)
+            mock_audio = make_mock_audio_segment(100)
+
+            with patch("pydub.AudioSegment.from_file", return_value=mock_audio):
+                result = backend.generate_audio(long_text, "test_voice")
+
+                # Should synthesize multiple times (once per chunk)
+                assert mock_voice.synthesize_wav.call_count > 1
+
+                # The result should be a combined AudioSegment (mocked)
+                assert result is not None
+
+    def test_generate_audio_chunks_with_pause(self, tmp_path: Path) -> None:
+        """Test that chunks are concatenated with a 100ms pause."""
+        voices_dir = tmp_path / "voices"
+        voices_dir.mkdir()
+        voice_file = voices_dir / "test_voice.onnx"
+        voice_file.write_text("fake model content")
+
+        backend = PiperTTSBackend(voices_dir=voices_dir, max_text_length=50)
+
+        mock_voice = MagicMock()
+
+        def synthesize_side_effect(text: str, wav_file) -> None:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(24000)
+            wav_file.writeframes(b"\x00\x00" * 100)
+
+        mock_voice.synthesize_wav.side_effect = synthesize_side_effect
+        with patch(
+            "drinkingfountain.tts.piper.PiperVoice.load", return_value=mock_voice
+        ):
+            # Text that will be chunked (needs to be > 50 chars)
+            text = "First chunk content that is long enough. Second chunk content that is also long enough to require splitting."
+            # Ensure it's > 50 chars
+            assert len(text) > 50
+
+            mock_audio = make_mock_audio_segment(100)
+
+            with patch(
+                "pydub.AudioSegment.from_file", return_value=mock_audio
+            ) as mock_from_file:
+                with patch(
+                    "pydub.AudioSegment.silent",
+                    return_value=make_mock_audio_segment(100),
+                ) as mock_silent:
+                    backend.generate_audio(text, "test_voice")
+
+                    # Should have called from_file multiple times (once per chunk)
+                    # The exact number depends on the chunking algorithm
+                    assert mock_from_file.call_count > 1
+
+                    # Should have created a silent pause (only if more than 1 chunk)
+                    if mock_voice.synthesize_wav.call_count > 1:
+                        mock_silent.assert_called_once_with(duration=100)
+
+                    # The result should be the combination (we can't easily test the exact
+                    # concatenation without a real AudioSegment, but we can verify the
+                    # synthesis was called multiple times)
+                    assert mock_voice.synthesize_wav.call_count > 1
+
+    def test_generate_audio_short_text_no_chunking(self, tmp_path: Path) -> None:
+        """Test that short text (<= max_text_length) does not trigger chunking."""
+        voices_dir = tmp_path / "voices"
+        voices_dir.mkdir()
+        voice_file = voices_dir / "test_voice.onnx"
+        voice_file.write_text("fake model content")
+
+        backend = PiperTTSBackend(voices_dir=voices_dir, max_text_length=500)
+
+        mock_voice = MagicMock()
+
+        def synthesize_side_effect(text: str, wav_file) -> None:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(24000)
+            wav_file.writeframes(b"\x00\x00" * 100)
+
+        mock_voice.synthesize_wav.side_effect = synthesize_side_effect
+        with patch(
+            "drinkingfountain.tts.piper.PiperVoice.load", return_value=mock_voice
+        ):
+            with patch(
+                "pydub.AudioSegment.from_file",
+                return_value=make_mock_audio_segment(100),
+            ):
+                short_text = "This is short."
+                backend.generate_audio(short_text, "test_voice")
+
+                # Should synthesize only once
+                mock_voice.synthesize_wav.assert_called_once()
+                # The text should be the original short text
+                args = mock_voice.synthesize_wav.call_args[0]
+                assert args[0] == short_text
+
+    def test_max_text_length_parameter(self, tmp_path: Path) -> None:
+        """Test that max_text_length parameter is respected."""
+        voices_dir = tmp_path / "voices"
+        voices_dir.mkdir()
+        voice_file = voices_dir / "test_voice.onnx"
+        voice_file.write_text("fake model content")
+
+        # Test default value
+        backend1 = PiperTTSBackend(voices_dir=voices_dir)
+        assert backend1.max_text_length == 500
+        assert backend1._chunker.max_chunk_size == 500
+
+        # Test custom value
+        backend2 = PiperTTSBackend(voices_dir=voices_dir, max_text_length=1000)
+        assert backend2.max_text_length == 1000
+        assert backend2._chunker.max_chunk_size == 1000
+
 
 class TestCachedTTSBackend:
     """Tests for the caching wrapper."""

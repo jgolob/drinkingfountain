@@ -8,6 +8,8 @@ import wave
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
+from drinkingfountain.utils.text_chunker import TextChunker
+
 from .base import TTSBackend
 
 if TYPE_CHECKING:
@@ -36,17 +38,23 @@ class PiperTTSBackend(TTSBackend):
     Voice models are stored in a directory and loaded on demand with caching.
     """
 
-    def __init__(self, voices_dir: Path | None = None) -> None:
+    def __init__(
+        self, voices_dir: Path | None = None, max_text_length: int = 500
+    ) -> None:
         """Initialize the Piper TTS backend.
 
         Args:
             voices_dir: Directory containing voice model files (.onnx). If None,
                        uses the default Piper voices directory.
+            max_text_length: Maximum text length before chunking. Texts longer than
+                           this will be split into chunks. Default is 500 characters.
         """
         self.voices_dir = (voices_dir or DEFAULT_VOICES_DIR).resolve()
         self.voices_dir.mkdir(parents=True, exist_ok=True)
         self._voice_cache: dict[str, PiperVoice] = {}
         self._cached_voice_list: list[str] | None = None
+        self.max_text_length = max_text_length
+        self._chunker = TextChunker(max_chunk_size=max_text_length)
 
     def is_available(self) -> bool:
         """Check if Piper TTS is installed and importable."""
@@ -150,6 +158,11 @@ class PiperTTSBackend(TTSBackend):
         Raises:
             FileNotFoundError: If the voice model file is missing.
             RuntimeError: If synthesis fails.
+
+        Note:
+            If the text exceeds max_text_length, it will be automatically
+            chunked and the resulting audio segments will be concatenated
+            with a 100ms pause between chunks for natural-sounding speech.
         """
         if not text.strip():
             # Return empty audio? Or raise? For now, return 0-length segment.
@@ -157,6 +170,72 @@ class PiperTTSBackend(TTSBackend):
 
             return AudioSegment.empty()
 
+        # Check if text needs chunking
+        if len(text) > self.max_text_length:
+            chunks = self._chunker.chunk(text)
+            logger.debug(
+                "Text length %d exceeds max %d, chunking into %d pieces",
+                len(text),
+                self.max_text_length,
+                len(chunks),
+            )
+
+            if not chunks:
+                logger.warning(
+                    "Chunking produced no chunks, falling back to empty audio"
+                )
+                from pydub import AudioSegment
+
+                return AudioSegment.empty()
+
+            # Generate audio for each chunk
+            from pydub import AudioSegment
+
+            audio_segments: list[AudioSegment] = []
+            for i, chunk_text in enumerate(chunks):
+                logger.debug(
+                    "Synthesizing chunk %d/%d (len=%d): %r...",
+                    i + 1,
+                    len(chunks),
+                    len(chunk_text),
+                    chunk_text[:50],
+                )
+                chunk_audio = self._synthesize_single(chunk_text, voice)
+                audio_segments.append(chunk_audio)
+
+            # Concatenate with 100ms pause between chunks
+            if len(audio_segments) == 1:
+                return audio_segments[0]
+
+            pause = AudioSegment.silent(duration=100)  # 100ms pause
+            combined = audio_segments[0]
+            for segment in audio_segments[1:]:
+                combined = combined + pause + segment
+
+            logger.debug(
+                "Combined %d chunks into final audio (duration=%dms)",
+                len(audio_segments),
+                len(combined),
+            )
+            return combined
+        else:
+            # Short text, no chunking needed
+            return self._synthesize_single(text, voice)
+
+    def _synthesize_single(self, text: str, voice: str) -> "AudioSegment":
+        """Synthesize a single piece of text (assumed to be within length limits).
+
+        Args:
+            text: The text to synthesize.
+            voice: The voice identifier.
+
+        Returns:
+            An AudioSegment containing the synthesized speech.
+
+        Raises:
+            FileNotFoundError: If the voice model file is missing.
+            RuntimeError: If synthesis fails.
+        """
         voice_obj = self._load_voice(voice)
 
         try:
