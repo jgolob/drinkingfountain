@@ -3,7 +3,7 @@ name = "drinkingfountain"
 version = "0.1.0"
 description = "Convert Fountain-format screenplays to audioplays using local TTS models"
 readme = "README.md"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.13"
 license = {text = "MIT"}
 authors = [
     {name = "Drinking Fountain Contributors"}
@@ -24,6 +24,7 @@ classifiers = [
     "Topic :: Text Processing :: Markup",
 ]
 dependencies = [
+    "audioop-lts>=0.2.2",
     "click>=8.1.0",
     "numpy>=1.24.0",
     "piper-tts>=1.4.1",
