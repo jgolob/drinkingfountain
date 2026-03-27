@@ -26,6 +26,7 @@ classifiers = [
 dependencies = [
     "click>=8.1.0",
     "numpy>=1.24.0",
+    "piper-tts>=1.4.1",
     "pydub>=0.25.1",
     "pyyaml>=6.0",
     "soundfile>=0.12.0",
