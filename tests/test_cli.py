@@ -82,19 +82,65 @@ class TestRenderCommand:
         assert result.exit_code == 2  # Click exits with 2 for missing argument/file
         assert "does not exist" in result.output
 
+    @patch("drinkingfountain.cli._play_mix")
     @patch("drinkingfountain.cli.PiperTTSBackend")
     @patch("drinkingfountain.cli.FountainParser")
     def test_render_no_output(
         self,
         mock_parser: MagicMock,
         mock_piper: MagicMock,
+        mock_play_mix: MagicMock,
         runner: CliRunner,
         temp_script: Path,
     ) -> None:
-        """Test render without --output option."""
-        result = runner.invoke(cli, ["render", str(temp_script)])
-        assert result.exit_code == 2
-        assert "--output" in result.output
+        """Test render without --output option (should play audio)."""
+        # Setup mocks
+        mock_piper.return_value.is_available.return_value = True
+        mock_piper.return_value.list_voices.return_value = ["voice1"]
+
+        mock_script = MagicMock()
+        mock_script.title = "Test Script"
+
+        # Create a scene with dialogue blocks
+        scene1 = MagicMock()
+        scene1.heading = MagicMock(content="Scene 1")
+        dialogue1 = MagicMock(spec=Dialogue)
+        dialogue1.character = "JOHN"
+        dialogue1.content = "Hello, world!"
+        scene1.blocks = [dialogue1]
+
+        mock_script.scenes = [scene1]
+        mock_script.characters = {"JOHN"}
+        mock_parser.return_value.parse.return_value = mock_script
+
+        # Mock voice manager
+        with patch("drinkingfountain.cli.VoiceManager") as mock_voice_mgr_class:
+            mock_voice_mgr = MagicMock()
+            mock_voice_mgr.get_voice_for_character.return_value = "voice1"
+            mock_voice_mgr_class.return_value = mock_voice_mgr
+
+            # Mock TTS audio generation
+            from pydub import AudioSegment
+
+            mock_audio = AudioSegment.silent(duration=1000)
+            mock_piper.return_value.generate_audio.return_value = mock_audio
+
+            # Mock mixer
+            with patch("drinkingfountain.cli.AudioMixer") as mock_mixer_class:
+                mock_mixer = MagicMock()
+                mock_mixer.duration.return_value = 5.0
+                mock_mixer_class.return_value = mock_mixer
+                mock_mixer.get_mix.return_value = mock_audio
+
+                result = runner.invoke(cli, ["render", str(temp_script)])
+
+                # Should succeed
+                assert result.exit_code == 0, (
+                    f"Output: {result.output}\nError: {result.exception}"
+                )
+                assert "Playback complete!" in result.output
+                # _play_mix is mocked, so "Playing audio..." message won't appear
+                mock_play_mix.assert_called_once_with(mock_audio)
 
     @patch("drinkingfountain.cli.PiperTTSBackend")
     @patch("drinkingfountain.cli.FountainParser")
@@ -283,3 +329,69 @@ class TestVoicesCommand:
         result = runner.invoke(cli, ["voices", "test", "test_voice", "Hello"])
         assert result.exit_code == 1
         assert "not found" in result.output
+
+
+class TestPlayMixFunction:
+    """Tests for the _play_mix helper function."""
+
+    def test_play_mix_success(self, runner: CliRunner) -> None:
+        """Test _play_mix with successful playback."""
+        from pydub import AudioSegment
+
+        from drinkingfountain.cli import _play_mix
+
+        # Create a mock simpleaudio module
+        mock_sa = MagicMock()
+        mock_play_obj = MagicMock()
+        mock_sa.play_buffer.return_value = mock_play_obj
+
+        with patch.dict("sys.modules", {"simpleaudio": mock_sa}):
+            mock_audio = AudioSegment.silent(duration=1000, frame_rate=22050)
+            _play_mix(mock_audio)
+            mock_sa.play_buffer.assert_called_once()
+            mock_play_obj.wait_done.assert_called_once()
+
+    def test_play_mix_missing_simpleaudio(self, runner: CliRunner) -> None:
+        """Test _play_mix when simpleaudio is not installed."""
+        from pydub import AudioSegment
+
+        from drinkingfountain.cli import _play_mix
+
+        # Ensure simpleaudio is not available
+        with patch.dict("sys.modules", {"simpleaudio": None}):
+            mock_audio = AudioSegment.silent(duration=1000)
+            with pytest.raises(SystemExit) as exc_info:
+                _play_mix(mock_audio)
+            assert exc_info.value.code == 1
+
+    def test_play_mix_keyboard_interrupt(self, runner: CliRunner) -> None:
+        """Test _play_mix when user presses Ctrl+C."""
+        from pydub import AudioSegment
+
+        from drinkingfountain.cli import _play_mix
+
+        mock_sa = MagicMock()
+        mock_play_obj = MagicMock()
+        mock_sa.play_buffer.return_value = mock_play_obj
+        mock_play_obj.wait_done.side_effect = KeyboardInterrupt
+
+        with patch.dict("sys.modules", {"simpleaudio": mock_sa}):
+            mock_audio = AudioSegment.silent(duration=1000)
+            with pytest.raises(SystemExit) as exc_info:
+                _play_mix(mock_audio)
+            assert exc_info.value.code == 0
+
+    def test_play_mix_playback_error(self, runner: CliRunner) -> None:
+        """Test _play_mix when playback fails."""
+        from pydub import AudioSegment
+
+        from drinkingfountain.cli import _play_mix
+
+        mock_sa = MagicMock()
+        mock_sa.play_buffer.side_effect = RuntimeError("Playback failed")
+
+        with patch.dict("sys.modules", {"simpleaudio": mock_sa}):
+            mock_audio = AudioSegment.silent(duration=1000)
+            with pytest.raises(SystemExit) as exc_info:
+                _play_mix(mock_audio)
+            assert exc_info.value.code == 1

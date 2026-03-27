@@ -36,6 +36,47 @@ def setup_logging(verbose: bool) -> None:
     )
 
 
+def _play_mix(audio) -> None:
+    """Play an audio segment through the default audio device.
+
+    Args:
+        audio: AudioSegment to play.
+
+    Raises:
+        SystemExit: If simpleaudio is not available or playback fails.
+    """
+    try:
+        import simpleaudio as sa  # type: ignore
+
+        click.echo("Playing audio... (press Ctrl+C to stop)")
+        # Convert to raw audio data
+        raw_data = audio.raw_data
+        play_obj = sa.play_buffer(
+            raw_data,
+            num_channels=audio.channels,
+            bytes_per_sample=audio.sample_width,
+            sample_rate=audio.frame_rate,
+        )
+        play_obj.wait_done()
+    except ImportError:
+        click.echo(
+            "Error: Audio playback requires 'simpleaudio'. Install with:\n"
+            "  pip install simpleaudio\n"
+            "\n"
+            "Alternatively, use --output to save to a file instead of playing.",
+            err=True,
+        )
+        sys.exit(1)
+    except KeyboardInterrupt:
+        click.echo("\nPlayback interrupted by user.")
+        # simpleaudio doesn't require explicit stop when using wait_done,
+        # but we exit cleanly
+        sys.exit(0)
+    except Exception as e:
+        click.echo(f"Error during playback: {e}", err=True)
+        sys.exit(1)
+
+
 @click.group()
 @click.version_option(None, "--version", "-v")
 def cli() -> None:
@@ -53,8 +94,8 @@ def cli() -> None:
     "-o",
     "--output",
     type=click.Path(),
-    required=True,
-    help="Output audio file (WAV or MP3)",
+    required=False,
+    help="Output audio file (WAV or MP3). If not provided, audio will play through the default audio device.",
 )
 @click.option(
     "--config",
@@ -88,7 +129,7 @@ def render(
 
     # Convert string paths to Path objects
     script_path = Path(script)
-    output_path = Path(output)
+    output_path = Path(output) if output else None
     config_path = Path(config) if config else None
     voices_dir_path = Path(voices_dir) if voices_dir else None
     cache_dir_path = Path(cache_dir) if cache_dir else None
@@ -235,31 +276,46 @@ def render(
             # Add to mixer
             mixer.add_dialogue(dialogue, audio)
 
-        # Export
-        logger.info("Exporting to %s...", output_path)
-        output_format = output_path.suffix.lstrip(".").lower()
-        if output_format not in ("wav", "mp3"):
-            click.echo(
-                f"Error: Unsupported output format '{output_format}'. Use WAV or MP3.",
-                err=True,
-            )
-            ctx.exit(1)
-
-        # For MP3, use a reasonable bitrate
-        parameters = ["-q:a", "0"] if output_format == "mp3" else None
-
-        mixer.export(output_path, format=output_format, parameters=parameters)
-
-        # Print statistics
+        # Either export to file or play through default audio device
         elapsed = time.time() - start_time
         duration = mixer.duration()
 
-        click.echo("\n✓ Render complete!")
-        click.echo(f"  Output: {output_path}")
-        click.echo(f"  Duration: {duration:.2f} seconds ({duration / 60:.2f} minutes)")
-        click.echo(f"  Processing time: {elapsed:.2f} seconds")
-        click.echo(f"  TTS calls: {tts_calls}")
-        # TODO: Add cache hit tracking if we expose it from CachedTTSBackend
+        if output_path:
+            # Export to file
+            logger.info("Exporting to %s...", output_path)
+            output_format = output_path.suffix.lstrip(".").lower()
+            if output_format not in ("wav", "mp3"):
+                click.echo(
+                    f"Error: Unsupported output format '{output_format}'. Use WAV or MP3.",
+                    err=True,
+                )
+                ctx.exit(1)
+
+            # For MP3, use a reasonable bitrate
+            parameters = ["-q:a", "0"] if output_format == "mp3" else None
+
+            mixer.export(output_path, format=output_format, parameters=parameters)
+
+            # Print success message for file export
+            click.echo("\n✓ Render complete!")
+            click.echo(f"  Output: {output_path}")
+            click.echo(
+                f"  Duration: {duration:.2f} seconds ({duration / 60:.2f} minutes)"
+            )
+            click.echo(f"  Processing time: {elapsed:.2f} seconds")
+            click.echo(f"  TTS calls: {tts_calls}")
+            # TODO: Add cache hit tracking if we expose it from CachedTTSBackend
+        else:
+            # Play through default audio device
+            _play_mix(mixer.get_mix())
+
+            # Print success message for playback
+            click.echo("\n✓ Playback complete!")
+            click.echo(
+                f"  Duration: {duration:.2f} seconds ({duration / 60:.2f} minutes)"
+            )
+            click.echo(f"  Processing time: {elapsed:.2f} seconds")
+            click.echo(f"  TTS calls: {tts_calls}")
 
     except FileNotFoundError as e:
         click.echo(f"Error: {e}", err=True)

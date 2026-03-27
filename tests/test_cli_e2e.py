@@ -292,14 +292,27 @@ voices:
         assert result.exit_code == 2
         assert "does not exist" in result.output or "Invalid value" in result.output
 
+    @patch("drinkingfountain.cli._play_mix")
     def test_render_missing_output_option(
-        self, runner: CliRunner, temp_script_file: Path, patched_piper
+        self,
+        mock_play_mix: MagicMock,
+        runner: CliRunner,
+        temp_script_file: Path,
+        patched_piper,
+        mock_tts_instance,
     ):
-        """Test render without --output option."""
+        """Test render without --output option (should play audio)."""
         result = runner.invoke(cli, ["render", str(temp_script_file)])
 
-        assert result.exit_code == 2
-        assert "--output" in result.output
+        # Should succeed and play audio
+        assert result.exit_code == 0, (
+            f"Command failed with output: {result.output}\n"
+            f"Exception: {result.exception}"
+        )
+        # Should show playback complete message (not "Playing audio..." because _play_mix is mocked)
+        assert "Playback complete!" in result.output
+        # Verify _play_mix was called with the mixed audio
+        mock_play_mix.assert_called_once()
 
     def test_render_tts_not_available(
         self,
