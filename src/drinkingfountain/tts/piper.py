@@ -119,7 +119,14 @@ class PiperTTSBackend(TTSBackend):
                 e.returncode,
                 e.stderr,
             )
-            raise RuntimeError(f"Voice download failed: {e.stderr}") from e
+            # Provide more helpful error messages for common failures
+            error_msg = e.stderr.strip() if e.stderr else str(e)
+            if "HTTP Error 404" in error_msg or "Not Found" in error_msg:
+                raise RuntimeError(
+                    f"Voice '{voice}' not found. The voice name may be incorrect or not available.\n"
+                    f"Check the Piper TTS documentation for available voice models."
+                ) from e
+            raise RuntimeError(f"Voice download failed: {error_msg}") from e
         except Exception as e:
             logger.error("Failed to download voice '%s': %s", voice, e)
             raise RuntimeError(f"Voice download failed: {e}") from e
