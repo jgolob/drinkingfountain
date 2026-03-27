@@ -14,6 +14,7 @@ DrinkingFountain is a command-line tool that transforms Fountain screenplay file
 - **Voice Management**: List, download, and test voice models from HuggingFace
 - **Smart Chunking**: Automatic handling of long dialogue lines
 - **Multiple Output Formats**: Export to WAV or MP3 (requires ffmpeg)
+- **Direct Playback**: Play audio directly through the system's default audio device (requires simpleaudio)
 
 ---
 
@@ -24,6 +25,7 @@ DrinkingFountain is a command-line tool that transforms Fountain screenplay file
 - **Python**: 3.10 or newer
 - **Package manager**: `uv` (recommended) or `pip`
 - **ffmpeg**: Required for MP3 export (optional if you only need WAV)
+- **simpleaudio**: Required for audio playback through speakers
 
 #### Installing ffmpeg
 
@@ -75,21 +77,16 @@ We should come here more often.
 
 2. **Render to audio**:
 
+**Option A: Save to a file** (works without simpleaudio):
+
 ```bash
 drinkingfountain render script.fountain -o output.wav
 ```
 
-3. **Play the output**:
+**Option B: Play through speakers** (requires simpleaudio):
 
 ```bash
-# macOS
-afplay output.wav
-
-# Linux
-play output.wav
-
-# Windows
-start output.wav
+drinkingfountain render script.fountain
 ```
 
 That's it! For more control, read on.
@@ -179,22 +176,34 @@ All timing values are in seconds and can be fractional (e.g., `0.25`).
 Render a Fountain script to audio.
 
 ```bash
-drinkingfountain render SCRIPT -o OUTPUT [OPTIONS]
+drinkingfountain render SCRIPT [OPTIONS]
 ```
 
 **Arguments**:
 - `SCRIPT`: Path to the Fountain file (required)
 
 **Options**:
-- `-o, --output PATH`: Output audio file path (required). Format determined by extension (`.wav` or `.mp3`)
+- `-o, --output PATH`: Output audio file path (optional). Format determined by extension (`.wav` or `.mp3`). If omitted, audio plays through the default audio device.
 - `--config PATH`: Configuration file path
 - `--voices-dir PATH`: Directory containing voice models (overrides default)
 - `--cache-dir PATH`: TTS cache directory (caches synthesized audio to speed up re-runs)
 - `--verbose`: Enable debug logging
 
-**Example**:
+**Examples**:
+
+Save to a WAV file:
 ```bash
-drinkingfountain render myscript.fountain -o myscript.mp3 --cache-dir .cache
+drinkingfountain render myscript.fountain -o output.wav
+```
+
+Play through speakers:
+```bash
+drinkingfountain render myscript.fountain
+```
+
+Save to MP3 (requires ffmpeg):
+```bash
+drinkingfountain render myscript.fountain -o output.mp3 --cache-dir .cache
 ```
 
 ### `drinkingfountain voices`

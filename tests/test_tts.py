@@ -85,7 +85,7 @@ class TestPiperTTSBackend:
                 "-m",
                 "piper.download_voices",
                 "en_US-amy-medium",
-                "--dest",
+                "--download-dir",
                 str(download_dir),
             ]
             mock_run.assert_called_once_with(

@@ -104,7 +104,7 @@ class PiperTTSBackend(TTSBackend):
                     "-m",
                     "piper.download_voices",
                     voice,
-                    "--dest",
+                    "--download-dir",
                     str(download_dir),
                 ],
                 check=True,
