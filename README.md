@@ -43,14 +43,6 @@ Using **pip**:
 pip install -e .
 ```
 
-### Install Piper TTS
-
-DrinkingFountain uses Piper TTS as its speech synthesis backend:
-
-```bash
-pip install piper-tts
-```
-
 ### Download Voice Models
 
 At least one voice model is required. Download your first voice:
@@ -375,13 +367,6 @@ Override with `--voices-dir` if you want a custom location.
 **Solution**: Download at least one voice model:
 ```bash
 drinkingfountain voices download en_US-amy-medium
-```
-
-### "Piper TTS is not installed"
-
-**Solution**: Install the `piper-tts` package:
-```bash
-pip install piper-tts
 ```
 
 ### MP3 export fails with "ffmpeg not found"
