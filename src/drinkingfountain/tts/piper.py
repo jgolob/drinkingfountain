@@ -20,8 +20,22 @@ try:
     from piper import PiperVoice
 
     PIPER_AVAILABLE = True
+
+    # Try to import VOICES dictionary from various possible locations
+    PIPER_AVAILABLE_VOICES = None
+    try:
+        from piper.download_voices import (
+            VOICES as PIPER_AVAILABLE_VOICES,  # type: ignore
+        )
+    except (ImportError, AttributeError):
+        # Fallback: try alternative import paths
+        try:
+            from piper.voices import VOICES as PIPER_AVAILABLE_VOICES  # type: ignore
+        except (ImportError, AttributeError):
+            PIPER_AVAILABLE_VOICES = None
 except ImportError:
     PIPER_AVAILABLE = False
+    PIPER_AVAILABLE_VOICES = None
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +92,60 @@ class PiperTTSBackend(TTSBackend):
                 voices.append(path.stem)
         self._cached_voice_list = voices
         return voices
+
+    def list_available_voices(self) -> list[str]:
+        """List voice models available for download from Piper.
+
+        Returns:
+            A list of available voice identifiers (e.g., "en_US-amy-medium").
+            Returns an empty list if Piper TTS is not installed.
+
+        Raises:
+            RuntimeError: If the voice list cannot be retrieved.
+        """
+        if not PIPER_AVAILABLE:
+            raise RuntimeError(
+                "Piper TTS is not installed. Cannot fetch available voices.\n"
+                "Install with: pip install piper-tts"
+            )
+
+        try:
+            # Use subprocess to call piper's download_voices module
+            # Running without arguments lists all available voices
+            result = subprocess.run(
+                [sys.executable, "-m", "piper.download_voices"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            # Parse the output: one voice per line, possibly with extra info
+            # The output format is typically: voice_id (language, quality, dataset)
+            # We'll extract just the voice_id (first token on each line)
+            voices = []
+            for line in result.stdout.strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                # The voice ID is the first word before any whitespace or parenthesis
+                voice_id = line.split()[0] if line.split() else line
+                voices.append(voice_id)
+            return sorted(voices)
+        except subprocess.CalledProcessError as e:
+            logger.error(
+                "Failed to list available voices: exit code %d, stderr: %s",
+                e.returncode,
+                e.stderr,
+            )
+            raise RuntimeError(f"Failed to fetch available voices: {e.stderr}") from e
+        except subprocess.TimeoutExpired as e:
+            logger.error("Timeout while fetching available voices")
+            raise RuntimeError(
+                "Timeout while fetching available voices from Piper"
+            ) from e
+        except Exception as e:
+            logger.error("Failed to list available voices: %s", e)
+            raise RuntimeError(f"Failed to fetch available voices: {e}") from e
 
     def download_voice(self, voice: str, target_dir: Path | None = None) -> None:
         """Download a voice model.

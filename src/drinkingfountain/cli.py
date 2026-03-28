@@ -391,6 +391,52 @@ def voices_download(voice: str, voices_dir: str | None) -> None:
         sys.exit(1)
 
 
+@voices.command("available")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["list", "json"], case_sensitive=False),
+    default="list",
+    help="Output format (list or json)",
+)
+@click.option(
+    "--language",
+    type=str,
+    help="Filter by language code (e.g., en_US, fr_FR)",
+)
+def voices_available(output_format: str, language: str | None) -> None:
+    """List voice models available for download from Piper."""
+    try:
+        piper = PiperTTSBackend()
+        voices = piper.list_available_voices()
+
+        # Apply language filter if provided
+        if language:
+            voices = [v for v in voices if v.startswith(language + "-")]
+
+        if not voices:
+            click.echo("No voices match the criteria.")
+            return
+
+        if output_format == "list":
+            click.echo(f"Available voices for download ({len(voices)}):")
+            for voice in sorted(voices):
+                click.echo(f"  {voice}")
+        else:  # json format
+            import json
+
+            # Output as JSON array of strings (simple) or objects with metadata
+            # Since we use subprocess to get the list, we don't have structured metadata
+            # easily available. For now, output simple array of IDs.
+            click.echo(json.dumps(sorted(voices), indent=2))
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Unexpected error: {e}", err=True)
+        sys.exit(1)
+
+
 @voices.command("test")
 @click.argument("voice", type=str)
 @click.argument("text", type=str)

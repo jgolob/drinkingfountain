@@ -330,6 +330,88 @@ class TestVoicesCommand:
         assert result.exit_code == 1
         assert "not found" in result.output
 
+    @patch("drinkingfountain.cli.PiperTTSBackend")
+    def test_voices_available_list(
+        self, mock_piper: MagicMock, runner: CliRunner
+    ) -> None:
+        """Test voices available command with list format."""
+        mock_piper.return_value.list_available_voices.return_value = [
+            "en_US-amy-medium",
+            "en_US-john-medium",
+            "fr_FR-henri-medium",
+        ]
+
+        result = runner.invoke(cli, ["voices", "available"])
+        assert result.exit_code == 0, (
+            f"Output: {result.output}\nError: {result.exception}"
+        )
+        assert "Available voices for download (3):" in result.output
+        assert "en_US-amy-medium" in result.output
+        assert "en_US-john-medium" in result.output
+        assert "fr_FR-henri-medium" in result.output
+
+    @patch("drinkingfountain.cli.PiperTTSBackend")
+    def test_voices_available_json(
+        self, mock_piper: MagicMock, runner: CliRunner
+    ) -> None:
+        """Test voices available command with JSON format."""
+        mock_piper.return_value.list_available_voices.return_value = [
+            "en_US-amy-medium",
+            "en_US-john-medium",
+        ]
+
+        result = runner.invoke(cli, ["voices", "available", "--format", "json"])
+        assert result.exit_code == 0, (
+            f"Output: {result.output}\nError: {result.exception}"
+        )
+        # Should be valid JSON array of strings
+        import json
+
+        data = json.loads(result.output)
+        assert data == ["en_US-amy-medium", "en_US-john-medium"]
+
+    @patch("drinkingfountain.cli.PiperTTSBackend")
+    def test_voices_available_filter_by_language(
+        self, mock_piper: MagicMock, runner: CliRunner
+    ) -> None:
+        """Test voices available command with language filter."""
+        mock_piper.return_value.list_available_voices.return_value = [
+            "en_US-amy-medium",
+            "en_US-john-medium",
+            "fr_FR-henri-medium",
+        ]
+
+        result = runner.invoke(cli, ["voices", "available", "--language", "en_US"])
+        assert result.exit_code == 0
+        assert "Available voices for download (2):" in result.output
+        assert "en_US-amy-medium" in result.output
+        assert "en_US-john-medium" in result.output
+        assert "fr_FR-henri-medium" not in result.output
+
+    @patch("drinkingfountain.cli.PiperTTSBackend")
+    def test_voices_available_empty(
+        self, mock_piper: MagicMock, runner: CliRunner
+    ) -> None:
+        """Test voices available when no voices are available."""
+        mock_piper.return_value.list_available_voices.return_value = []
+
+        result = runner.invoke(cli, ["voices", "available"])
+        assert result.exit_code == 0
+        assert "No voices match the criteria" in result.output
+
+    @patch("drinkingfountain.cli.PiperTTSBackend")
+    def test_voices_available_piper_not_installed(
+        self, mock_piper: MagicMock, runner: CliRunner
+    ) -> None:
+        """Test voices available when Piper is not installed."""
+        mock_piper.return_value.list_available_voices.side_effect = RuntimeError(
+            "Piper TTS is not installed"
+        )
+
+        result = runner.invoke(cli, ["voices", "available"])
+        assert result.exit_code == 1
+        assert "Error: Piper TTS is not installed" in result.output
+
 
 class TestPlayMixFunction:
     """Tests for the _play_mix helper function."""

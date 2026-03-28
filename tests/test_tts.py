@@ -360,6 +360,69 @@ class TestPiperTTSBackend:
         assert backend2.max_text_length == 1000
         assert backend2._chunker.max_chunk_size == 1000
 
+    @patch("subprocess.run")
+    def test_list_available_voices_returns_sorted_list(
+        self, mock_run: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test list_available_voices returns sorted voice IDs from subprocess output."""
+        # Simulate piper.download_voices output
+        mock_output = """en_US-amy-medium (en_US, medium, libritts)
+en_US-john-medium (en_US, medium, libritts)
+fr_FR-henri-medium (fr_FR, medium, libritts)
+"""
+        mock_run.return_value = MagicMock(returncode=0, stdout=mock_output, stderr="")
+
+        backend = PiperTTSBackend()
+        result = backend.list_available_voices()
+        assert result == ["en_US-amy-medium", "en_US-john-medium", "fr_FR-henri-medium"]
+        # Verify subprocess was called correctly
+        mock_run.assert_called_once_with(
+            [sys.executable, "-m", "piper.download_voices"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def test_list_available_voices_raises_if_piper_not_available(self) -> None:
+        """Test list_available_voices raises RuntimeError if Piper not installed."""
+        with patch.dict(
+            "drinkingfountain.tts.piper.__dict__", {"PIPER_AVAILABLE": False}
+        ):
+            backend = PiperTTSBackend()
+            with pytest.raises(RuntimeError, match="Piper TTS is not installed"):
+                backend.list_available_voices()
+
+    @patch("subprocess.run")
+    def test_list_available_voices_handles_subprocess_failure(
+        self, mock_run: MagicMock
+    ) -> None:
+        """Test list_available_voices handles subprocess errors."""
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1, "cmd", stderr="download error"
+        )
+
+        with patch.dict(
+            "drinkingfountain.tts.piper.__dict__", {"PIPER_AVAILABLE": True}
+        ):
+            backend = PiperTTSBackend()
+            with pytest.raises(RuntimeError, match="Failed to fetch available voices"):
+                backend.list_available_voices()
+
+    @patch("subprocess.run")
+    def test_list_available_voices_handles_empty_output(
+        self, mock_run: MagicMock
+    ) -> None:
+        """Test list_available_voices handles empty output."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch.dict(
+            "drinkingfountain.tts.piper.__dict__", {"PIPER_AVAILABLE": True}
+        ):
+            backend = PiperTTSBackend()
+            result = backend.list_available_voices()
+            assert result == []
+
 
 class TestCachedTTSBackend:
     """Tests for the caching wrapper."""

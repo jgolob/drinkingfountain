@@ -226,6 +226,38 @@ Available voices (3):
   en_US-sarah-low
 ```
 
+#### `drinkingfountain voices available`
+
+List voice models available for download from Piper (not yet installed).
+
+```bash
+drinkingfountain voices available [OPTIONS]
+```
+
+**Options**:
+- `--format {list,json}`: Output format. `list` shows a simple list (default). `json` shows detailed metadata.
+- `--language CODE`: Filter by language code (e.g., `en_US`, `fr_FR`)
+
+**Example output** (list format):
+```
+Available voices for download (3):
+  en_US-amy-medium
+  en_US-john-medium
+  fr_FR-henri-medium
+```
+
+**Example output** (JSON format):
+```json
+[
+  {
+    "id": "en_US-amy-medium",
+    "language": "en_US",
+    "quality": "medium",
+    "dataset": "libritts"
+  }
+]
+```
+
 #### `drinkingfountain voices download`
 
 Download a voice model from HuggingFace.
@@ -354,6 +386,21 @@ Voice IDs follow the pattern:
 List installed voices:
 ```bash
 drinkingfountain voices list
+```
+
+List all voices available for download from Piper:
+```bash
+drinkingfountain voices available
+```
+
+Filter by language:
+```bash
+drinkingfountain voices available --language en_US
+```
+
+Get detailed information in JSON format:
+```bash
+drinkingfountain voices available --format json
 ```
 
 Download a voice:
