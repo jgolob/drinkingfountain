@@ -301,17 +301,17 @@ voices:
         patched_piper,
         mock_tts_instance,
     ):
-        """Test render without --output option (should play audio)."""
+        """Test render without --output option (should stream audio for playback)."""
         result = runner.invoke(cli, ["render", str(temp_script_file)])
 
-        # Should succeed and play audio
+        # Should succeed and stream audio
         assert result.exit_code == 0, (
             f"Command failed with output: {result.output}\n"
             f"Exception: {result.exception}"
         )
-        # Should show playback complete message (not "Playing audio..." because _play_mix is mocked)
+        # Should show playback complete message
         assert "Playback complete!" in result.output
-        # Verify _play_mix was called with the mixed audio
+        # Verify _play_mix was called
         mock_play_mix.assert_called_once()
 
     def test_render_tts_not_available(

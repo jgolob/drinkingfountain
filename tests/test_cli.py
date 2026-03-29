@@ -93,7 +93,7 @@ class TestRenderCommand:
         runner: CliRunner,
         temp_script: Path,
     ) -> None:
-        """Test render without --output option (should play audio)."""
+        """Test render without --output option (should stream audio for playback)."""
         # Setup mocks
         mock_piper.return_value.is_available.return_value = True
         mock_piper.return_value.list_voices.return_value = ["voice1"]
@@ -125,22 +125,18 @@ class TestRenderCommand:
             mock_audio = AudioSegment.silent(duration=1000)
             mock_piper.return_value.generate_audio.return_value = mock_audio
 
-            # Mock mixer
-            with patch("drinkingfountain.cli.AudioMixer") as mock_mixer_class:
-                mock_mixer = MagicMock()
-                mock_mixer.duration.return_value = 5.0
-                mock_mixer_class.return_value = mock_mixer
-                mock_mixer.get_mix.return_value = mock_audio
+            # Use real AudioMixer (not mocked) with real silent audio
+            # The mixer will be constructed normally and use the mock audio
 
-                result = runner.invoke(cli, ["render", str(temp_script)])
+            result = runner.invoke(cli, ["render", str(temp_script)])
 
-                # Should succeed
-                assert result.exit_code == 0, (
-                    f"Output: {result.output}\nError: {result.exception}"
-                )
-                assert "Playback complete!" in result.output
-                # _play_mix is mocked, so "Playing audio..." message won't appear
-                mock_play_mix.assert_called_once_with(mock_audio)
+            # Should succeed
+            assert result.exit_code == 0, (
+                f"Output: {result.output}\nError: {result.exception}"
+            )
+            assert "Playback complete!" in result.output
+            # _play_mix should be called
+            mock_play_mix.assert_called_once()
 
     @patch("drinkingfountain.cli.PiperTTSBackend")
     @patch("drinkingfountain.cli.FountainParser")

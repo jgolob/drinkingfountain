@@ -46,7 +46,7 @@ def _play_mix(audio) -> None:
         SystemExit: If simpleaudio is not available or playback fails.
     """
     try:
-        import simpleaudio as sa  # type: ignore
+        import simpleaudio as sa
 
         click.echo("Playing audio... (press Ctrl+C to stop)")
         # Convert to raw audio data
@@ -245,43 +245,42 @@ def render(
         # Track statistics
         tts_calls = 0
 
-        # Generate audio for each dialogue block
-        click.echo("\nGenerating audio...")
-        current_scene = None
-
-        for scene, dialogue in dialogue_blocks:
-            # Add scene heading if entering a new scene
-            if scene != current_scene:
-                mixer.add_scene_heading(scene.heading)
-                current_scene = scene
-
-            # Get voice for character
-            voice = voice_mgr.get_voice_for_character(dialogue.character)
-
-            # Generate audio
-            try:
-                audio = tts.generate_audio(dialogue.content, voice)
-                tts_calls += 1
-            except FileNotFoundError:
-                click.echo(
-                    f"\nError: Voice model not found for voice '{voice}'. "
-                    f"Use 'drinkingfountain voices download {voice}' to download it.",
-                    err=True,
-                )
-                ctx.exit(1)
-            except RuntimeError as e:
-                click.echo(f"\nError: TTS synthesis failed: {e}", err=True)
-                ctx.exit(1)
-
-            # Add to mixer
-            mixer.add_dialogue(dialogue, audio)
-
-        # Either export to file or play through default audio device
-        elapsed = time.time() - start_time
-        duration = mixer.duration()
-
         if output_path:
+            # BATCH MODE: Generate all audio first, then export to file
+            click.echo("\nGenerating audio...")
+            current_scene = None
+
+            for scene, dialogue in dialogue_blocks:
+                # Add scene heading if entering a new scene
+                if scene != current_scene:
+                    mixer.add_scene_heading(scene.heading)
+                    current_scene = scene
+
+                # Get voice for character
+                voice = voice_mgr.get_voice_for_character(dialogue.character)
+
+                # Generate audio
+                try:
+                    audio = tts.generate_audio(dialogue.content, voice)
+                    tts_calls += 1
+                except FileNotFoundError:
+                    click.echo(
+                        f"\nError: Voice model not found for voice '{voice}'. "
+                        f"Use 'drinkingfountain voices download {voice}' to download it.",
+                        err=True,
+                    )
+                    ctx.exit(1)
+                except RuntimeError as e:
+                    click.echo(f"\nError: TTS synthesis failed: {e}", err=True)
+                    ctx.exit(1)
+
+                # Add to mixer
+                mixer.add_dialogue(dialogue, audio)
+
             # Export to file
+            elapsed = time.time() - start_time
+            duration = mixer.duration()
+
             logger.info("Exporting to %s...", output_path)
             output_format = output_path.suffix.lstrip(".").lower()
             if output_format not in ("wav", "mp3"):
@@ -306,8 +305,45 @@ def render(
             click.echo(f"  TTS calls: {tts_calls}")
             # TODO: Add cache hit tracking if we expose it from CachedTTSBackend
         else:
-            # Play through default audio device
-            _play_mix(mixer.get_mix())
+            # STREAMING MODE: Generate all audio first, then play back.
+            # This avoids the threading and queue-based streaming which can cause truncation.
+            click.echo("\nGenerating audio...")
+            current_scene = None
+
+            for scene, dialogue in dialogue_blocks:
+                # Add scene heading if entering a new scene
+                if scene != current_scene:
+                    mixer.add_scene_heading(scene.heading)
+                    current_scene = scene
+
+                # Get voice for character
+                voice = voice_mgr.get_voice_for_character(dialogue.character)
+
+                # Generate audio
+                try:
+                    audio = tts.generate_audio(dialogue.content, voice)
+                    tts_calls += 1
+                except FileNotFoundError:
+                    click.echo(
+                        f"\nError: Voice model not found for voice '{voice}'. "
+                        f"Use 'drinkingfountain voices download {voice}' to download it.",
+                        err=True,
+                    )
+                    ctx.exit(1)
+                except RuntimeError as e:
+                    click.echo(f"\nError: TTS synthesis failed: {e}", err=True)
+                    ctx.exit(1)
+
+                # Add to mixer
+                mixer.add_dialogue(dialogue, audio)
+
+            # All audio generated; now play the complete mix
+            click.echo("Playing audio... (press Ctrl+C to stop)")
+            mix = mixer.get_mix()
+            _play_mix(mix)
+
+            elapsed = time.time() - start_time
+            duration = mixer.duration()
 
             # Print success message for playback
             click.echo("\n✓ Playback complete!")
@@ -481,7 +517,7 @@ def voices_test(
         else:
             # Try to play audio
             try:
-                import simpleaudio as sa  # type: ignore
+                import simpleaudio as sa
 
                 click.echo("Playing audio... (press Ctrl+C to stop)")
                 # Convert to raw audio data
