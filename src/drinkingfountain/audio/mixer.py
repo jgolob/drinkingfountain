@@ -11,7 +11,7 @@ from typing import Any
 
 from pydub import AudioSegment
 
-from drinkingfountain.parser.script import Block, BlockType, Dialogue
+from drinkingfountain.parser.script import Action, Block, BlockType, Dialogue
 
 
 class ChannelMode(Enum):
@@ -190,6 +190,7 @@ class AudioMixer:
         self,
         heading: Block,
         audio: AudioSegment | None = None,
+        pause_after: float | None = None,
     ) -> None:
         """Add a scene heading to the mix.
 
@@ -200,6 +201,8 @@ class AudioMixer:
         Args:
             heading: The scene heading block.
             audio: Optional audio segment for the heading itself.
+            pause_after: Optional custom pause duration in seconds after the heading.
+                If None, uses self.timing.pause_after_scene_heading.
         """
         # Determine if this is a new scene (transition from another scene)
         is_scene_transition = self.state.last_block_type == BlockType.SCENE_HEADING or (
@@ -230,7 +233,7 @@ class AudioMixer:
             self.state.current_position += audio.duration_seconds
 
         # Add post-heading pause
-        pause_duration = self.timing.pause_after_scene_heading
+        pause_duration = pause_after if pause_after is not None else self.timing.pause_after_scene_heading
         pause = AudioSegment.silent(
             duration=int(pause_duration * 1000),
             frame_rate=self.config.sample_rate,
@@ -264,6 +267,65 @@ class AudioMixer:
         effect = self._prepare_audio(effect)
         self._sound_effects[timestamp] = effect
         # Note: We don't add to self.segments because effects are overlaid later
+
+    def add_narrative(
+        self,
+        block: Action,
+        audio: AudioSegment,
+        pause_before: float = 0.5,
+        pause_after: float = 0.3,
+    ) -> None:
+        """Add a narrative segment (stage directions) with configurable pauses.
+
+        This method is used for reading Action blocks (stage directions) with
+        the narrator voice. It allows specifying custom pause durations before
+        and after the narrative.
+
+        Args:
+            block: The Action block being narrated.
+            audio: The audio segment for the narrative text.
+            pause_before: Pause duration in seconds before the narrative (default: 0.5)
+            pause_after: Pause duration in seconds after the narrative (default: 0.3)
+
+        Raises:
+            ValueError: If audio is not a valid AudioSegment.
+        """
+        if not isinstance(audio, AudioSegment):
+            raise ValueError(f"Expected AudioSegment, got {type(audio)}")
+
+        # Add pre-pause if needed
+        if pause_before > 0:
+            pause = AudioSegment.silent(
+                duration=int(pause_before * 1000),  # Convert to ms
+                frame_rate=self.config.sample_rate,
+            )
+            if self.config.channels == ChannelMode.MONO.value:
+                pause = pause.set_channels(1)
+            else:
+                pause = pause.set_channels(2)
+            self.segments.append((pause, f"pause:before_narrative:{pause_before:.2f}s"))
+            self.state.current_position += pause_before
+
+        # Add the narrative audio
+        audio = self._prepare_audio(audio)
+        self.segments.append((audio, f"narrative:{block.content[:30]}..."))
+        self.state.current_position += audio.duration_seconds
+
+        # Add post-pause if needed
+        if pause_after > 0:
+            pause = AudioSegment.silent(
+                duration=int(pause_after * 1000),  # Convert to ms
+                frame_rate=self.config.sample_rate,
+            )
+            if self.config.channels == ChannelMode.MONO.value:
+                pause = pause.set_channels(1)
+            else:
+                pause = pause.set_channels(2)
+            self.segments.append((pause, f"pause:after_narrative:{pause_after:.2f}s"))
+            self.state.current_position += pause_after
+
+        self.state.last_block_type = BlockType.ACTION
+        self.state.in_scene = True
 
     def _calculate_pause_for_block(self, block: Block) -> float:
         """Calculate the appropriate pause duration before adding this block.

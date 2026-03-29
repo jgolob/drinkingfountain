@@ -17,8 +17,9 @@ from drinkingfountain.audio import AudioMixer
 from drinkingfountain.audio import TimingConfig as MixerTimingConfig
 from drinkingfountain.config import Config
 from drinkingfountain.parser.fountain import FountainParser
-from drinkingfountain.parser.script import Dialogue, Scene
+from drinkingfountain.parser.script import Action, Dialogue, Scene, SceneHeading
 from drinkingfountain.tts import CachedTTSBackend, PiperTTSBackend
+from drinkingfountain.utils.narrator import transform_scene_heading
 from drinkingfountain.voices import VoiceManager
 
 
@@ -113,6 +114,11 @@ def cli() -> None:
     help="TTS cache directory",
 )
 @click.option("--verbose", is_flag=True, help="Verbose logging")
+@click.option(
+    "--no-narrator",
+    is_flag=True,
+    help="Disable narrator for stage directions and scene headings",
+)
 @click.pass_context
 def render(
     ctx: click.Context,
@@ -122,6 +128,7 @@ def render(
     voices_dir: str | None,
     cache_dir: str | None,
     verbose: bool,
+    no_narrator: bool,
 ) -> None:
     """Render a Fountain script to audio."""
     setup_logging(verbose)
@@ -182,6 +189,36 @@ def render(
                     )
                 voice_mgr.set_character_voice(character, voice)
 
+        # Narrator configuration
+        narrator_cfg = config_obj.narrator
+        if no_narrator:
+            narrator_cfg.enabled = False
+
+        # Determine narrator voice if narrator is enabled
+        narrator_voice = None
+        if narrator_cfg.enabled:
+            available_voices = tts.list_voices()
+            if not available_voices:
+                click.echo(
+                    "Warning: No voice models available for narrator. "
+                    "Narrator will be disabled.",
+                    err=True,
+                )
+                narrator_cfg.enabled = False
+            else:
+                if narrator_cfg.voice:
+                    if narrator_cfg.voice in available_voices:
+                        narrator_voice = narrator_cfg.voice
+                    else:
+                        click.echo(
+                            f"Warning: Specified narrator voice '{narrator_cfg.voice}' not found. "
+                            f"Using first available voice.",
+                            err=True,
+                        )
+                        narrator_voice = available_voices[0]
+                else:
+                    narrator_voice = available_voices[0]
+
         # Parse script
         logger.info("Parsing script: %s", script_path)
         parser = FountainParser()
@@ -191,16 +228,13 @@ def render(
         click.echo(f"  Scenes: {len(script_obj.scenes)}")
         click.echo(f"  Characters: {len(script_obj.characters)}")
 
-        # Find all dialogue blocks
-        dialogue_blocks: list[tuple[Scene, Dialogue]] = []
-        for scene in script_obj.scenes:
-            for block in scene.blocks:
-                if isinstance(block, Dialogue):
-                    dialogue_blocks.append((scene, block))
+        # Count dialogue blocks
+        dialogue_count = sum(
+            1 for scene in script_obj.scenes for block in scene.blocks if isinstance(block, Dialogue)
+        )
+        click.echo(f"  Dialogue lines: {dialogue_count}")
 
-        click.echo(f"  Dialogue lines: {len(dialogue_blocks)}")
-
-        if not dialogue_blocks:
+        if dialogue_count == 0:
             click.echo("Warning: No dialogue found in script.", err=True)
             ctx.exit(1)
 
@@ -248,34 +282,71 @@ def render(
         if output_path:
             # BATCH MODE: Generate all audio first, then export to file
             click.echo("\nGenerating audio...")
-            current_scene = None
 
-            for scene, dialogue in dialogue_blocks:
-                # Add scene heading if entering a new scene
-                if scene != current_scene:
-                    mixer.add_scene_heading(scene.heading)
-                    current_scene = scene
+            # Process all scenes and blocks in order
+            for scene in script_obj.scenes:
+                # Process scene heading
+                heading = scene.heading
+                if narrator_cfg.enabled:
+                    try:
+                        heading_text = transform_scene_heading(heading.content, narrator_cfg.expand_int_ext)
+                        audio = tts.generate_audio(heading_text, narrator_voice)
+                        tts_calls += 1
+                        mixer.add_scene_heading(heading, audio, pause_after=narrator_cfg.pause_after_heading)
+                    except (FileNotFoundError, RuntimeError) as e:
+                        click.echo(
+                            f"\nWarning: Narrator TTS error for scene heading: {e}. "
+                            "Disabling narrator for the remainder of the script.",
+                            err=True,
+                        )
+                        narrator_cfg.enabled = False
+                        # Add scene heading without audio
+                        mixer.add_scene_heading(heading)
+                else:
+                    mixer.add_scene_heading(heading)
 
-                # Get voice for character
-                voice = voice_mgr.get_voice_for_character(dialogue.character)
-
-                # Generate audio
-                try:
-                    audio = tts.generate_audio(dialogue.content, voice)
-                    tts_calls += 1
-                except FileNotFoundError:
-                    click.echo(
-                        f"\nError: Voice model not found for voice '{voice}'. "
-                        f"Use 'drinkingfountain voices download {voice}' to download it.",
-                        err=True,
-                    )
-                    ctx.exit(1)
-                except RuntimeError as e:
-                    click.echo(f"\nError: TTS synthesis failed: {e}", err=True)
-                    ctx.exit(1)
-
-                # Add to mixer
-                mixer.add_dialogue(dialogue, audio)
+                # Process blocks within the scene
+                for block in scene.blocks:
+                    # Dialogue
+                    if isinstance(block, Dialogue):
+                        voice = voice_mgr.get_voice_for_character(block.character)
+                        try:
+                            audio = tts.generate_audio(block.content, voice)
+                            tts_calls += 1
+                        except FileNotFoundError:
+                            click.echo(
+                                f"\nError: Voice model not found for voice '{voice}'. "
+                                f"Use 'drinkingfountain voices download {voice}' to download it.",
+                                err=True,
+                            )
+                            ctx.exit(1)
+                        except RuntimeError as e:
+                            click.echo(f"\nError: TTS synthesis failed for dialogue: {e}", err=True)
+                            ctx.exit(1)
+                        mixer.add_dialogue(block, audio)
+                    
+                    # Action (stage directions)
+                    elif isinstance(block, Action) and narrator_cfg.enabled:
+                        try:
+                            audio = tts.generate_audio(block.content, narrator_voice)
+                            tts_calls += 1
+                        except (FileNotFoundError, RuntimeError) as e:
+                            click.echo(
+                                f"\nWarning: Narrator TTS error for action block: {e}. "
+                                "Disabling narrator for the remainder of the script.",
+                                err=True,
+                            )
+                            narrator_cfg.enabled = False
+                            # Skip this action block (no audio)
+                            continue
+                        mixer.add_narrative(
+                            block,
+                            audio,
+                            pause_before=narrator_cfg.pause_before_narrative,
+                            pause_after=narrator_cfg.pause_after_narrative,
+                        )
+                    
+                    # Parenthetical, Transition, etc.: skip (no audio)
 
             # Export to file
             elapsed = time.time() - start_time
@@ -308,34 +379,71 @@ def render(
             # STREAMING MODE: Generate all audio first, then play back.
             # This avoids the threading and queue-based streaming which can cause truncation.
             click.echo("\nGenerating audio...")
-            current_scene = None
 
-            for scene, dialogue in dialogue_blocks:
-                # Add scene heading if entering a new scene
-                if scene != current_scene:
-                    mixer.add_scene_heading(scene.heading)
-                    current_scene = scene
+            # Process all scenes and blocks in order
+            for scene in script_obj.scenes:
+                # Process scene heading
+                heading = scene.heading
+                if narrator_cfg.enabled:
+                    try:
+                        heading_text = transform_scene_heading(heading.content, narrator_cfg.expand_int_ext)
+                        audio = tts.generate_audio(heading_text, narrator_voice)
+                        tts_calls += 1
+                        mixer.add_scene_heading(heading, audio, pause_after=narrator_cfg.pause_after_heading)
+                    except (FileNotFoundError, RuntimeError) as e:
+                        click.echo(
+                            f"\nWarning: Narrator TTS error for scene heading: {e}. "
+                            "Disabling narrator for the remainder of the script.",
+                            err=True,
+                        )
+                        narrator_cfg.enabled = False
+                        # Add scene heading without audio
+                        mixer.add_scene_heading(heading)
+                else:
+                    mixer.add_scene_heading(heading)
 
-                # Get voice for character
-                voice = voice_mgr.get_voice_for_character(dialogue.character)
-
-                # Generate audio
-                try:
-                    audio = tts.generate_audio(dialogue.content, voice)
-                    tts_calls += 1
-                except FileNotFoundError:
-                    click.echo(
-                        f"\nError: Voice model not found for voice '{voice}'. "
-                        f"Use 'drinkingfountain voices download {voice}' to download it.",
-                        err=True,
-                    )
-                    ctx.exit(1)
-                except RuntimeError as e:
-                    click.echo(f"\nError: TTS synthesis failed: {e}", err=True)
-                    ctx.exit(1)
-
-                # Add to mixer
-                mixer.add_dialogue(dialogue, audio)
+                # Process blocks within the scene
+                for block in scene.blocks:
+                    # Dialogue
+                    if isinstance(block, Dialogue):
+                        voice = voice_mgr.get_voice_for_character(block.character)
+                        try:
+                            audio = tts.generate_audio(block.content, voice)
+                            tts_calls += 1
+                        except FileNotFoundError:
+                            click.echo(
+                                f"\nError: Voice model not found for voice '{voice}'. "
+                                f"Use 'drinkingfountain voices download {voice}' to download it.",
+                                err=True,
+                            )
+                            ctx.exit(1)
+                        except RuntimeError as e:
+                            click.echo(f"\nError: TTS synthesis failed for dialogue: {e}", err=True)
+                            ctx.exit(1)
+                        mixer.add_dialogue(block, audio)
+                    
+                    # Action (stage directions)
+                    elif isinstance(block, Action) and narrator_cfg.enabled:
+                        try:
+                            audio = tts.generate_audio(block.content, narrator_voice)
+                            tts_calls += 1
+                        except (FileNotFoundError, RuntimeError) as e:
+                            click.echo(
+                                f"\nWarning: Narrator TTS error for action block: {e}. "
+                                "Disabling narrator for the remainder of the script.",
+                                err=True,
+                            )
+                            narrator_cfg.enabled = False
+                            # Skip this action block (no audio)
+                            continue
+                        mixer.add_narrative(
+                            block,
+                            audio,
+                            pause_before=narrator_cfg.pause_before_narrative,
+                            pause_after=narrator_cfg.pause_after_narrative,
+                        )
+                    
+                    # Parenthetical, Transition, etc.: skip (no audio)
 
             # All audio generated; now play the complete mix
             click.echo("Playing audio... (press Ctrl+C to stop)")

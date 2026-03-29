@@ -26,6 +26,43 @@ class ProsodyConfig:
 
 
 @dataclass
+class NarratorConfig:
+    """Configuration for the narrator feature.
+
+    Attributes:
+        enabled: Whether the narrator is enabled (default: True)
+        voice: Optional specific voice ID to use for narration. If None, uses default narrator voice.
+        expand_int_ext: Whether to expand INT/EXT to Interior/Exterior (default: True)
+        pause_before_narrative: Pause before narrative segments in seconds (default: 0.5)
+        pause_after_narrative: Pause after narrative segments in seconds (default: 0.3)
+        pause_after_heading: Pause after scene headings when narrator is speaking them.
+            If None, uses timing.pause_after_scene_heading (default: None)
+    """
+
+    enabled: bool = True
+    voice: str | None = None
+    expand_int_ext: bool = True
+    pause_before_narrative: float = 0.5
+    pause_after_narrative: float = 0.3
+    pause_after_heading: float | None = None
+
+    def __post_init__(self) -> None:
+        """Validate configuration values."""
+        if self.pause_before_narrative < 0:
+            raise ValueError(
+                f"Pause before narrative must be non-negative, got {self.pause_before_narrative}"
+            )
+        if self.pause_after_narrative < 0:
+            raise ValueError(
+                f"Pause after narrative must be non-negative, got {self.pause_after_narrative}"
+            )
+        if self.pause_after_heading is not None and self.pause_after_heading < 0:
+            raise ValueError(
+                f"Pause after heading must be non-negative, got {self.pause_after_heading}"
+            )
+
+
+@dataclass
 class AudioConfig:
     """Audio output configuration.
 
@@ -74,6 +111,7 @@ class Config:
         timing: Timing and pause settings
         voices: Mapping of character names to voice IDs
         prosody: Mapping of parenthetical cues to prosody parameters
+        narrator: Narrator configuration for reading stage directions and scene headings
     """
 
     backend: str = "piper"
@@ -81,6 +119,7 @@ class Config:
     timing: TimingConfig = field(default_factory=TimingConfig)
     voices: dict[str, str] = field(default_factory=dict)
     prosody: dict[str, ProsodyConfig] = field(default_factory=dict)
+    narrator: NarratorConfig = field(default_factory=NarratorConfig)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
@@ -149,10 +188,12 @@ class Config:
         timing_data = data.get("timing", {})
         voices_data = data.get("voices", {})
         prosody_data = data.get("prosody", {})
+        narrator_data = data.get("narrator", {})
 
         # Build config objects
         audio_config = AudioConfig(**audio_data) if audio_data else AudioConfig()
         timing_config = TimingConfig(**timing_data) if timing_data else TimingConfig()
+        narrator_config = NarratorConfig(**narrator_data) if narrator_data else NarratorConfig()
 
         # Build prosody dict
         prosody_configs = {}
@@ -169,6 +210,7 @@ class Config:
             timing=timing_config,
             voices=voices_data,
             prosody=prosody_configs,
+            narrator=narrator_config,
         )
 
     def validate(self) -> list[str]:
@@ -233,6 +275,14 @@ class Config:
                     f"Invalid prosody volume for '{key}': {prosody.volume}. "
                     "Must be positive."
                 )
+
+        # Validate narrator settings
+        # Note: NarratorConfig.__post_init__ already validates pause values,
+        # but we need to catch any errors if the config was created with invalid values
+        try:
+            self.narrator.__post_init__()
+        except ValueError as e:
+            errors.append(f"Narrator configuration error: {e}")
 
         # Validate backend
         valid_backends = ("piper", "coqui", "transformers")

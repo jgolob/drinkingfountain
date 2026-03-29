@@ -127,13 +127,18 @@ class TestRenderCommandE2E:
             assert "TTS calls:" in result.output
 
             # Verify TTS was called with expected texts
-            assert len(mock_tts_instance.calls) == 2
-            assert mock_tts_instance.calls[0][0] == "Hello, world."
-            assert mock_tts_instance.calls[1][0] == "Hi there."
+            # With narrator enabled by default, scene heading is also narrated
+            assert len(mock_tts_instance.calls) == 3
+            # First call should be the transformed scene heading
+            assert mock_tts_instance.calls[0][0] == "Interior ROOM - DAY"
+            # Next two are dialogue lines
+            assert mock_tts_instance.calls[1][0] == "Hello, world."
+            assert mock_tts_instance.calls[2][0] == "Hi there."
             # Voices should be from the available pool
             available_voices = {"voice1", "voice2", "voice3"}
             assert mock_tts_instance.calls[0][1] in available_voices
             assert mock_tts_instance.calls[1][1] in available_voices
+            assert mock_tts_instance.calls[2][1] in available_voices
 
             # Verify the output audio is valid
             audio = AudioSegment.from_wav(output_path)
@@ -211,10 +216,13 @@ voices:
             assert result.exit_code == 0
             assert output_path.exists()
 
-            # Verify TTS calls used the configured voices
-            assert len(mock_tts_instance.calls) == 2
-            assert mock_tts_instance.calls[0] == ("Hello, world.", "voice1")
-            assert mock_tts_instance.calls[1] == ("Hi there.", "voice2")
+            # Verify TTS calls used the configured voices (including narrator for scene heading)
+            assert len(mock_tts_instance.calls) == 3
+            # Scene heading narrated with first available voice (voice1)
+            assert mock_tts_instance.calls[0] == ("Interior ROOM - DAY", "voice1")
+            # Dialogues use configured voices
+            assert mock_tts_instance.calls[1] == ("Hello, world.", "voice1")
+            assert mock_tts_instance.calls[2] == ("Hi there.", "voice2")
 
     def test_render_with_voices_dir(
         self,
@@ -487,14 +495,16 @@ Hi there.
                 assert result.exit_code == 0
                 assert output_path.exists()
 
-                # Should have 2 TTS calls
-                assert len(mock_tts_instance.calls) == 2
-                # Check texts and that voices are from pool
-                assert mock_tts_instance.calls[0][0] == "Hello."
-                assert mock_tts_instance.calls[1][0] == "Hi there."
+                # Should have 4 TTS calls: 2 scene headings + 2 dialogues
+                assert len(mock_tts_instance.calls) == 4
+                # Check texts: first scene heading, then dialogue, then second heading, then dialogue
+                assert mock_tts_instance.calls[0][0] == "Interior HOUSE - DAY"
+                assert mock_tts_instance.calls[1][0] == "Hello."
+                assert mock_tts_instance.calls[2][0] == "Exterior PARK - NIGHT"
+                assert mock_tts_instance.calls[3][0] == "Hi there."
                 available_voices = {"voice1", "voice2", "voice3"}
-                assert mock_tts_instance.calls[0][1] in available_voices
-                assert mock_tts_instance.calls[1][1] in available_voices
+                for call in mock_tts_instance.calls:
+                    assert call[1] in available_voices
         finally:
             script_path.unlink(missing_ok=True)
 
@@ -545,13 +555,15 @@ Hi.
                 assert result.exit_code == 0
                 assert output_path.exists()
 
-                # Verify TTS calls
-                assert len(mock_tts_instance.calls) == 2
+                # Verify TTS calls (including scene heading)
+                assert len(mock_tts_instance.calls) == 3
+                # Scene heading narrated with first available voice (voice1)
+                assert mock_tts_instance.calls[0] == ("Interior ROOM - DAY", "voice1")
                 # JOHN should use voice1 explicitly (override)
-                assert mock_tts_instance.calls[0] == ("Hello.", "voice1")
+                assert mock_tts_instance.calls[1] == ("Hello.", "voice1")
                 # MARY should auto-assign to some voice from the pool
-                assert mock_tts_instance.calls[1][0] == "Hi."
+                assert mock_tts_instance.calls[2][0] == "Hi."
                 available_voices = {"voice1", "voice2", "voice3"}
-                assert mock_tts_instance.calls[1][1] in available_voices
+                assert mock_tts_instance.calls[2][1] in available_voices
         finally:
             script_path.unlink(missing_ok=True)
