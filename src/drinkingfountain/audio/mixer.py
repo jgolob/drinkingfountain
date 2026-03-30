@@ -4,7 +4,13 @@ This module provides the AudioMixer class which combines audio segments
 with configurable pauses, normalization, and export capabilities.
 """
 
-import time
+import atexit
+import logging
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -13,6 +19,8 @@ from typing import Any
 from pydub import AudioSegment
 
 from drinkingfountain.parser.script import Action, Block, BlockType, Dialogue
+
+logger = logging.getLogger(__name__)
 
 
 class ChannelMode(Enum):
@@ -619,7 +627,7 @@ class StreamingWAVWriter:
 
 
 class StreamingAudioPlayer:
-    """Stream audio to the audio device incrementally using simpleaudio.
+    """Stream audio to the audio device incrementally using system player.
 
     This class plays audio chunks as they become available, reducing memory
     usage compared to building the complete mix before playback.
@@ -627,6 +635,12 @@ class StreamingAudioPlayer:
     Playback is synchronous - each write_audio() call blocks until that chunk
     has finished playing. This avoids overlapping playback and potential
     concurrency issues.
+
+    Instead of using simpleaudio (which can deadlock on macOS), this
+    implementation writes each chunk to a temporary WAV file and plays it
+    using a system-provided audio player (afplay on macOS, aplay on Linux,
+    PowerShell on Windows). This is more reliable and avoids the deadlock
+    issues found with simpleaudio's wait_done().
 
     Example:
         >>> player = StreamingAudioPlayer(sample_rate=22050, channels=1, sample_width=2)
@@ -646,22 +660,39 @@ class StreamingAudioPlayer:
         self.sample_rate = sample_rate
         self.channels = channels
         self.sample_width = sample_width
-        self._simpleaudio = None
         self._all_played = False
+        self._temp_dir = tempfile.mkdtemp(prefix="drinkingfountain_audio_")
+        self._file_counter = 0
+        logger.debug("Created temporary audio directory: %s", self._temp_dir)
+        # Register cleanup on normal exit
+        atexit.register(self._cleanup_temp_dir)
 
-    def _ensure_simpleaudio(self) -> None:
-        """Lazy import simpleaudio and raise helpful error if unavailable."""
-        if self._simpleaudio is not None:
-            return
-        try:
-            import simpleaudio as sa
+    def _get_player_command(self, temp_path: str) -> list[str]:
+        """Get the system audio player command based on platform.
 
-            self._simpleaudio = sa
-        except ImportError as err:
-            raise ImportError(
-                "Audio playback requires 'simpleaudio'. Install with:\n"
-                "  pip install simpleaudio"
-            ) from err
+        Args:
+            temp_path: Path to the temporary WAV file to play.
+
+        Returns:
+            Command list ready for subprocess.run().
+        """
+        if sys.platform == "darwin":
+            return ["afplay", temp_path]
+        elif sys.platform.startswith("linux"):
+            return ["aplay", temp_path]
+        elif sys.platform == "win32":
+            # Use PowerShell with proper argument passing to avoid injection
+            return [
+                "powershell",
+                "-c",
+                "param($path) (New-Object Media.SoundPlayer $path).PlaySync()",
+                "--",
+                temp_path,
+            ]
+        else:
+            raise RuntimeError(
+                f"Unsupported platform for audio playback: {sys.platform}"
+            )
 
     def write_audio(self, audio: "AudioSegment") -> None:
         """Write an audio segment to be played.
@@ -675,17 +706,18 @@ class StreamingAudioPlayer:
         Raises:
             ValueError: If audio is not an AudioSegment.
             RuntimeError: If finalize() has already been called.
+            FileNotFoundError: If the system audio player is not found.
         """
+        import wave
+
         from pydub import AudioSegment
 
+        logger.debug("write_audio called: duration=%.3fs", audio.duration_seconds)
         if not isinstance(audio, AudioSegment):
             raise ValueError(f"Expected AudioSegment, got {type(audio)}")
 
         if self._all_played:
             raise RuntimeError("Cannot write audio after finalize() has been called")
-
-        self._ensure_simpleaudio()
-        assert self._simpleaudio is not None  # for type checker
 
         # Ensure audio matches output format
         if audio.frame_rate != self.sample_rate:
@@ -693,23 +725,70 @@ class StreamingAudioPlayer:
         if audio.channels != self.channels:
             audio = audio.set_channels(self.channels)
 
-        # Play the audio buffer and wait for completion
-        play_obj = self._simpleaudio.play_buffer(
-            audio.raw_data,
-            num_channels=audio.channels,
-            bytes_per_sample=audio.sample_width,
-            sample_rate=audio.frame_rate,
-        )
-        play_obj.wait_done()
-        # Small delay to ensure audio device is ready for next buffer
-        # This prevents issues where only the first scene plays on some systems
-        time.sleep(0.1)
+        # Write audio to a temporary WAV file
+        temp_path = os.path.join(self._temp_dir, f"chunk_{self._file_counter}.wav")
+        self._file_counter += 1
+
+        logger.debug("Writing temporary WAV file: %s", temp_path)
+        with wave.open(temp_path, "wb") as wf:
+            wf.setnchannels(audio.channels)
+            wf.setsampwidth(audio.sample_width)
+            wf.setframerate(audio.frame_rate)
+            wf.writeframes(audio.raw_data)
+
+        # Determine player command (already includes temp_path)
+        player_cmd = self._get_player_command(temp_path)
+
+        logger.debug("Playing audio with command: %s", " ".join(player_cmd))
+        try:
+            # Run the player and wait for it to complete
+            subprocess.run(player_cmd, check=True)
+            logger.debug("Playback completed successfully")
+        except subprocess.CalledProcessError as e:
+            logger.error("Audio player exited with code %d", e.returncode)
+            raise
+        except FileNotFoundError:
+            logger.error(
+                "Audio player '%s' not found. Please ensure it is installed.\n"
+                "On macOS, afplay should be present. On Linux, install alsa-utils (aplay).\n"
+                "On Windows, PowerShell should be available.",
+                player_cmd[0],
+            )
+            raise
+        finally:
+            # Clean up temporary file
+            try:
+                os.unlink(temp_path)
+                logger.debug("Deleted temporary file: %s", temp_path)
+            except OSError as e:
+                logger.warning("Failed to delete temporary file %s: %s", temp_path, e)
+
+        logger.debug("Write_audio completed for audio segment.")
+
+    def _cleanup_temp_dir(self) -> None:
+        """Internal cleanup of temporary directory."""
+        if not hasattr(self, "_temp_dir") or not self._temp_dir:
+            return
+        try:
+            if os.path.exists(self._temp_dir):
+                shutil.rmtree(self._temp_dir)
+                logger.debug("Cleaned up temporary directory: %s", self._temp_dir)
+        except Exception as e:
+            logger.warning(
+                "Failed to clean up temporary directory %s: %s", self._temp_dir, e
+            )
 
     def finalize(self) -> None:
         """Finalize the player.
 
-        For StreamingAudioPlayer, all audio is already played by the time
-        write_audio returns, so this is just a marker that no more audio
-        will be written.
+        Cleans up temporary directory and marks player as finished.
         """
+        logger.debug("finalize() called")
         self._all_played = True
+        # Clean up temporary directory
+        try:
+            self._cleanup_temp_dir()
+        except Exception as e:
+            logger.warning(
+                "Failed to clean up temporary directory %s: %s", self._temp_dir, e
+            )
