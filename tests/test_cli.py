@@ -71,7 +71,7 @@ class TestRenderCommand:
     """Test the render command."""
 
     @patch("drinkingfountain.cli.PiperTTSBackend")
-    @patch("drinkingfountain.cli.FountainParser")
+    @patch("drinkingfountain.services.FountainParser")
     def test_render_missing_script(
         self, mock_parser: MagicMock, mock_piper: MagicMock, runner: CliRunner
     ) -> None:
@@ -84,7 +84,7 @@ class TestRenderCommand:
 
     @patch("drinkingfountain.cli._play_mix")
     @patch("drinkingfountain.cli.PiperTTSBackend")
-    @patch("drinkingfountain.cli.FountainParser")
+    @patch("drinkingfountain.services.FountainParser")
     def test_render_no_output(
         self,
         mock_parser: MagicMock,
@@ -139,7 +139,7 @@ class TestRenderCommand:
             mock_play_mix.assert_called_once()
 
     @patch("drinkingfountain.cli.PiperTTSBackend")
-    @patch("drinkingfountain.cli.FountainParser")
+    @patch("drinkingfountain.services.FountainParser")
     def test_render_tts_not_available(
         self,
         mock_parser: MagicMock,
@@ -159,7 +159,7 @@ class TestRenderCommand:
 
     @patch("drinkingfountain.cli.VoiceManager")
     @patch("drinkingfountain.cli.PiperTTSBackend")
-    @patch("drinkingfountain.cli.FountainParser")
+    @patch("drinkingfountain.services.FountainParser")
     def test_render_success(
         self,
         mock_parser: MagicMock,
@@ -206,7 +206,7 @@ class TestRenderCommand:
         mock_piper.return_value.generate_audio.return_value = mock_audio
 
         # Mock mixer
-        with patch("drinkingfountain.cli.AudioMixer") as mock_mixer_class:
+        with patch("drinkingfountain.services.AudioMixer") as mock_mixer_class:
             mock_mixer = MagicMock()
             mock_mixer.duration.return_value = 5.0
             mock_mixer_class.return_value = mock_mixer
@@ -251,7 +251,7 @@ class TestRenderCommand:
 class TestVoicesCommand:
     """Test the voices command group."""
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     def test_voices_list_empty(self, mock_piper: MagicMock, runner: CliRunner) -> None:
         """Test voices list when no voices are available."""
         mock_piper.return_value.list_voices.return_value = []
@@ -260,7 +260,7 @@ class TestVoicesCommand:
         assert result.exit_code == 0
         assert "No voice models found" in result.output
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     def test_voices_list_success(
         self, mock_piper: MagicMock, runner: CliRunner
     ) -> None:
@@ -276,7 +276,7 @@ class TestVoicesCommand:
         assert "en_US-amy-medium" in result.output
         assert "en_US-john-medium" in result.output
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     def test_voices_download(self, mock_piper: MagicMock, runner: CliRunner) -> None:
         """Test voices download."""
         mock_piper.return_value.voices_dir = Path("/tmp/voices")
@@ -286,7 +286,7 @@ class TestVoicesCommand:
         assert "Downloading voice 'test_voice'" in result.output
         assert "downloaded to" in result.output
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     def test_voices_test_save(self, mock_piper: MagicMock, runner: CliRunner) -> None:
         """Test voices test with output file."""
         from pydub import AudioSegment
@@ -315,7 +315,7 @@ class TestVoicesCommand:
             assert "Audio saved to" in result.output
             assert output.exists()
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     def test_voices_test_voice_not_found(
         self, mock_piper: MagicMock, runner: CliRunner
     ) -> None:
@@ -326,7 +326,7 @@ class TestVoicesCommand:
         assert result.exit_code == 1
         assert "not found" in result.output
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     def test_voices_available_list(
         self, mock_piper: MagicMock, runner: CliRunner
     ) -> None:
@@ -346,7 +346,7 @@ class TestVoicesCommand:
         assert "en_US-john-medium" in result.output
         assert "fr_FR-henri-medium" in result.output
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     def test_voices_available_json(
         self, mock_piper: MagicMock, runner: CliRunner
     ) -> None:
@@ -366,7 +366,7 @@ class TestVoicesCommand:
         data = json.loads(result.output)
         assert data == ["en_US-amy-medium", "en_US-john-medium"]
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     def test_voices_available_filter_by_language(
         self, mock_piper: MagicMock, runner: CliRunner
     ) -> None:
@@ -384,7 +384,7 @@ class TestVoicesCommand:
         assert "en_US-john-medium" in result.output
         assert "fr_FR-henri-medium" not in result.output
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     def test_voices_available_empty(
         self, mock_piper: MagicMock, runner: CliRunner
     ) -> None:
@@ -395,7 +395,7 @@ class TestVoicesCommand:
         assert result.exit_code == 0
         assert "No voices match the criteria" in result.output
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     def test_voices_available_piper_not_installed(
         self, mock_piper: MagicMock, runner: CliRunner
     ) -> None:

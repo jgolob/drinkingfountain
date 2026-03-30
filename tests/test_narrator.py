@@ -2,16 +2,17 @@
 
 import tempfile
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 from pydub import AudioSegment
 
-from drinkingfountain.audio import AudioMixer, AudioConfig, TimingConfig
+from drinkingfountain.audio import AudioConfig, AudioMixer, TimingConfig
+from drinkingfountain.cli import cli
 from drinkingfountain.config import Config, NarratorConfig
 from drinkingfountain.utils.narrator import transform_scene_heading
-from drinkingfountain.cli import cli
 
 
 class TestTransformSceneHeading:
@@ -89,22 +90,32 @@ class TestNarratorConfig:
 
     def test_negative_pause_before_raises(self):
         """Negative pause_before_narrative should raise ValueError."""
-        with pytest.raises(ValueError, match="Pause before narrative must be non-negative"):
+        with pytest.raises(
+            ValueError, match="Pause before narrative must be non-negative"
+        ):
             NarratorConfig(pause_before_narrative=-0.5)
 
     def test_negative_pause_after_raises(self):
         """Negative pause_after_narrative should raise ValueError."""
-        with pytest.raises(ValueError, match="Pause after narrative must be non-negative"):
+        with pytest.raises(
+            ValueError, match="Pause after narrative must be non-negative"
+        ):
             NarratorConfig(pause_after_narrative=-0.3)
 
     def test_negative_pause_after_heading_raises(self):
         """Negative pause_after_heading should raise ValueError."""
-        with pytest.raises(ValueError, match="Pause after heading must be non-negative"):
+        with pytest.raises(
+            ValueError, match="Pause after heading must be non-negative"
+        ):
             NarratorConfig(pause_after_heading=-1.0)
 
     def test_zero_pauses_allowed(self):
         """Zero pause values should be allowed."""
-        config = NarratorConfig(pause_before_narrative=0.0, pause_after_narrative=0.0, pause_after_heading=0.0)
+        config = NarratorConfig(
+            pause_before_narrative=0.0,
+            pause_after_narrative=0.0,
+            pause_after_heading=0.0,
+        )
         assert config.pause_before_narrative == 0.0
         assert config.pause_after_narrative == 0.0
         assert config.pause_after_heading == 0.0
@@ -183,6 +194,7 @@ class TestAudioMixerAddNarrative:
         # Should have: pause, audio, pause = 3 segments
         assert len(self.mixer.segments) == 3
         # Check state
+        assert self.mixer.state.last_block_type is not None
         assert self.mixer.state.last_block_type.value == "action"
         assert self.mixer.state.in_scene is True
         # Check duration: 0.5s + 1.0s + 0.3s = 1.8s
@@ -215,7 +227,7 @@ class TestAudioMixerAddNarrative:
     def test_add_narrative_invalid_audio_raises(self):
         """Test that non-AudioSegment raises ValueError."""
         with pytest.raises(ValueError, match="Expected AudioSegment"):
-            self.mixer.add_narrative(self.action_block, "not audio")
+            self.mixer.add_narrative(self.action_block, cast(AudioSegment, "not audio"))
 
     def test_add_narrative_state_updated(self):
         """Test that state is properly updated after adding narrative."""
@@ -228,6 +240,7 @@ class TestAudioMixerAddNarrative:
 
         # Now add narrative
         self.mixer.add_narrative(self.action_block, audio)
+        assert self.mixer.state.last_block_type is not None
         assert self.mixer.state.last_block_type.value == "action"
         assert self.mixer.state.in_scene is True
 
@@ -276,9 +289,11 @@ Action line here.
             patch("drinkingfountain.cli.CachedTTSBackend") as mock_cached_class,
         ):
             mock_piper_class.return_value = mock_tts_instance
+
             # Make CachedTTSBackend just return the backend directly (no caching)
             def passthrough(backend, cache_dir=None):
                 return backend
+
             mock_cached_class.side_effect = passthrough
             yield mock_piper_class
 
@@ -286,7 +301,9 @@ Action line here.
         self, runner, simple_script, patched_piper, mock_tts_instance
     ):
         """Test that narrator is enabled by default and scene headings are narrated."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".fountain", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".fountain", delete=False
+        ) as f:
             f.write(simple_script)
             script_path = Path(f.name)
 
@@ -301,9 +318,13 @@ Action line here.
                 # Should have calls for: scene heading, dialogue, action = 3
                 assert len(mock_tts_instance.calls) == 3
                 # Check that scene heading was transformed
-                assert any(call[0] == "Interior ROOM - DAY" for call in mock_tts_instance.calls)
+                assert any(
+                    call[0] == "Interior ROOM - DAY" for call in mock_tts_instance.calls
+                )
                 # Check that action was narrated
-                assert any(call[0] == "Action line here." for call in mock_tts_instance.calls)
+                assert any(
+                    call[0] == "Action line here." for call in mock_tts_instance.calls
+                )
         finally:
             script_path.unlink(missing_ok=True)
 
@@ -311,7 +332,9 @@ Action line here.
         self, runner, simple_script, patched_piper, mock_tts_instance
     ):
         """Test that --no-narrator disables narration."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".fountain", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".fountain", delete=False
+        ) as f:
             f.write(simple_script)
             script_path = Path(f.name)
 
@@ -319,7 +342,14 @@ Action line here.
             with tempfile.TemporaryDirectory() as tmpdir:
                 output_path = Path(tmpdir) / "output.wav"
                 result = runner.invoke(
-                    cli, ["render", str(script_path), "-o", str(output_path), "--no-narrator"]
+                    cli,
+                    [
+                        "render",
+                        str(script_path),
+                        "-o",
+                        str(output_path),
+                        "--no-narrator",
+                    ],
                 )
 
                 assert result.exit_code == 0
@@ -330,7 +360,7 @@ Action line here.
             script_path.unlink(missing_ok=True)
 
     def test_narrator_graceful_degradation_on_tts_error(
-        self, runner, simple_script, patched_piper, mock_tts_instance
+        self, runner, simple_script, patched_piper, mock_tts_instance, caplog
     ):
         """Test that narrator disables gracefully on TTS error and continues with dialogue."""
         # Make TTS fail on first call (scene heading) but succeed on dialogue
@@ -346,7 +376,9 @@ Action line here.
 
         mock_tts_instance.generate_audio.side_effect = generate_audio_side_effect
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".fountain", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".fountain", delete=False
+        ) as f:
             f.write(simple_script)
             script_path = Path(f.name)
 
@@ -358,9 +390,15 @@ Action line here.
                 )
 
                 assert result.exit_code == 0
-                # Should have warning about narrator error
-                assert "Warning: Narrator TTS error" in result.output
-                assert "Disabling narrator" in result.output
+                # Should have warning about narrator error in logs
+                warning_logs = [
+                    r.message for r in caplog.records if r.levelname == "WARNING"
+                ]
+                assert any(
+                    "Narrator TTS error for scene heading" in msg
+                    for msg in warning_logs
+                )
+                assert any("Disabling narrator" in msg for msg in warning_logs)
                 # Dialogue should still be rendered (1 call for dialogue)
                 # Action should be skipped because narrator disabled
                 # Only successful calls are recorded: dialogue = 1
@@ -374,7 +412,9 @@ Action line here.
         self, runner, simple_script, patched_piper, mock_tts_instance
     ):
         """Test that narrator uses specified voice from config."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".fountain", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".fountain", delete=False
+        ) as f:
             f.write(simple_script)
             script_path = Path(f.name)
 
@@ -401,7 +441,11 @@ Action line here.
 
                 assert result.exit_code == 0
                 # Check that narrator voice used is voice2 for scene heading
-                heading_calls = [call for call in mock_tts_instance.calls if call[0] == "Interior ROOM - DAY"]
+                heading_calls = [
+                    call
+                    for call in mock_tts_instance.calls
+                    if call[0] == "Interior ROOM - DAY"
+                ]
                 assert len(heading_calls) == 1
                 assert heading_calls[0][1] == "voice2"
         finally:
@@ -411,7 +455,9 @@ Action line here.
         self, runner, simple_script, patched_piper, mock_tts_instance
     ):
         """Test that narrator uses first available voice when none specified."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".fountain", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".fountain", delete=False
+        ) as f:
             f.write(simple_script)
             script_path = Path(f.name)
 
@@ -424,17 +470,23 @@ Action line here.
 
                 assert result.exit_code == 0
                 # Check that narrator used voice1 (first available)
-                heading_calls = [call for call in mock_tts_instance.calls if call[0] == "Interior ROOM - DAY"]
+                heading_calls = [
+                    call
+                    for call in mock_tts_instance.calls
+                    if call[0] == "Interior ROOM - DAY"
+                ]
                 assert len(heading_calls) == 1
                 assert heading_calls[0][1] == "voice1"
         finally:
             script_path.unlink(missing_ok=True)
 
     def test_narrator_warns_if_specified_voice_not_found(
-        self, runner, simple_script, patched_piper, mock_tts_instance
+        self, runner, simple_script, patched_piper, mock_tts_instance, caplog
     ):
         """Test that warning is shown if configured narrator voice is not available."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".fountain", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".fountain", delete=False
+        ) as f:
             f.write(simple_script)
             script_path = Path(f.name)
 
@@ -460,7 +512,14 @@ Action line here.
                 )
 
                 assert result.exit_code == 0
-                assert "Specified narrator voice 'nonexistent_voice' not found" in result.output
+                # Check for warning in logs
+                warning_logs = [
+                    r.message for r in caplog.records if r.levelname == "WARNING"
+                ]
+                assert any(
+                    "Specified narrator voice 'nonexistent_voice' not found" in msg
+                    for msg in warning_logs
+                )
                 # Should still render using first available voice
                 assert len(mock_tts_instance.calls) >= 1
         finally:
