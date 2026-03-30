@@ -48,7 +48,6 @@ tox/
 Thumbs.db
 
 # Project-specific
-voices/
 outputs/
 cache/
 *.log
