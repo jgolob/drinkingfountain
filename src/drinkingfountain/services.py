@@ -7,6 +7,7 @@ for rendering scripts and managing voices, separating them from CLI concerns.
 from __future__ import annotations
 
 import logging
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -251,16 +252,42 @@ class RenderService:
         channels = 1 if self.config.audio.channels == "mono" else 2
         sample_width = 2  # 16-bit audio
 
+        # Determine output format and whether we need temporary WAV conversion
+        output_path = None
+        use_temp_wav = False
+        temp_wav_path = None
+        output_format = None
+
         if output:
             output_path = Path(output)
-            logger.info("Streaming to file: %s", output_path)
-            writer = StreamingWAVWriter(
-                filepath=output_path,
-                sample_rate=sample_rate,
-                channels=channels,
-                sample_width=sample_width,
+            output_format = output_path.suffix.lstrip(".").lower()
+            logger.info(
+                "Streaming to file: %s (format: %s)", output_path, output_format
             )
-            writer.__enter__()  # Manually enter context
+
+            if output_format == "wav":
+                writer = StreamingWAVWriter(
+                    filepath=output_path,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    sample_width=sample_width,
+                )
+                writer.__enter__()
+            else:
+                # For non-WAV formats, stream to a temporary WAV file, then convert
+                use_temp_wav = True
+                # Create temp file in same directory (or use tempfile module)
+                temp_wav_path = output_path.with_suffix(".tmp.wav")
+                logger.info(
+                    "Using temporary WAV file for conversion: %s", temp_wav_path
+                )
+                writer = StreamingWAVWriter(
+                    filepath=temp_wav_path,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    sample_width=sample_width,
+                )
+                writer.__enter__()
         else:
             output_path = None
             logger.info("Streaming to audio device")
@@ -393,13 +420,44 @@ class RenderService:
                     self._add_silence(writer, pause_between)
                     total_audio_duration += pause_between
 
-            output_time = time.perf_counter() - output_start
-
             # Finalize writer/player
             if output:
                 writer.finalize()
             else:
                 writer.finalize()  # This waits for playback to complete
+
+            # If using temporary WAV, convert to desired format
+            if use_temp_wav and temp_wav_path and output_path:
+                logger.info("Converting to %s...", output_format)
+                try:
+                    cmd = ["ffmpeg", "-i", str(temp_wav_path), "-y"]
+                    if output_format == "mp3":
+                        cmd.extend(["-b:a", "192k"])
+                    cmd.append(str(output_path))
+                    result = subprocess.run(
+                        cmd, capture_output=True, text=True, check=False
+                    )
+                    if result.returncode != 0:
+                        raise RuntimeError(f"ffmpeg conversion failed: {result.stderr}")
+                    logger.info("Conversion complete")
+                except FileNotFoundError:
+                    raise RuntimeError(
+                        "ffmpeg is not installed. Please install ffmpeg to export to MP3 format.\n"
+                        "See https://ffmpeg.org/download.html or use 'brew install ffmpeg' (macOS) or 'sudo apt install ffmpeg' (Ubuntu)."
+                    ) from None
+                finally:
+                    try:
+                        if temp_wav_path.exists():
+                            temp_wav_path.unlink()
+                            logger.debug(
+                                "Removed temporary WAV file: %s", temp_wav_path
+                            )
+                    except OSError as e:
+                        logger.warning(
+                            "Failed to remove temporary file %s: %s", temp_wav_path, e
+                        )
+
+            output_time = time.perf_counter() - output_start
 
         except Exception:
             # Ensure writer is cleaned up on error
@@ -408,6 +466,12 @@ class RenderService:
                 assert f is not None, "writer._file should not be None here"
                 if not f.closed:  # type: ignore
                     f.close()  # type: ignore
+            # Clean up temporary WAV file if it exists
+            if use_temp_wav and temp_wav_path and temp_wav_path.exists():
+                try:
+                    temp_wav_path.unlink()
+                except OSError:
+                    pass
             raise
 
         total_wall = time.perf_counter() - total_start
