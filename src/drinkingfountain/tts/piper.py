@@ -2,6 +2,7 @@
 
 import io
 import logging
+import re
 import subprocess
 import sys
 import wave
@@ -243,6 +244,9 @@ class PiperTTSBackend(TTSBackend):
             chunked and the resulting audio segments will be concatenated
             with a 100ms pause between chunks for natural-sounding speech.
         """
+        # Remove asterisk and underscore emphasis markers (* and _) before TTS processing
+        text = re.sub(r"[*_]+", "", text)
+
         if not text.strip():
             # Return empty audio? Or raise? For now, return 0-length segment.
             from pydub import AudioSegment
