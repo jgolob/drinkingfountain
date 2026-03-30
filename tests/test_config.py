@@ -6,7 +6,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from drinkingfountain.config import AudioConfig, Config, ProsodyConfig, TimingConfig
+from drinkingfountain.config import (
+    AudioConfig,
+    Config,
+    ProsodyConfig,
+    TimingConfig,
+    VoiceManagementConfig,
+)
 
 
 class TestProsodyConfig:
@@ -71,6 +77,34 @@ class TestTimingConfig:
         assert config.pause_between_scenes == 3.0
 
 
+class TestVoiceManagementConfig:
+    """Tests for VoiceManagementConfig dataclass."""
+
+    def test_defaults(self):
+        """Test default values."""
+        config = VoiceManagementConfig()
+        assert config.bulk_download_language is None
+        assert config.bulk_download_quality is None
+        assert config.max_concurrent_downloads == 3
+
+    def test_custom_values(self):
+        """Test custom initialization."""
+        config = VoiceManagementConfig(
+            bulk_download_language="en_US",
+            bulk_download_quality="high",
+            max_concurrent_downloads=5,
+        )
+        assert config.bulk_download_language == "en_US"
+        assert config.bulk_download_quality == "high"
+        assert config.max_concurrent_downloads == 5
+
+    def test_validation_max_concurrent_downloads_zero(self):
+        """Test that max_concurrent_downloads=0 is allowed but fails validation."""
+        # Should not raise immediately, but should fail validation later
+        config = VoiceManagementConfig(max_concurrent_downloads=0)
+        assert config.max_concurrent_downloads == 0
+
+
 class TestConfig:
     """Tests for main Config class."""
 
@@ -80,6 +114,7 @@ class TestConfig:
         assert config.backend == "piper"
         assert isinstance(config.audio, AudioConfig)
         assert isinstance(config.timing, TimingConfig)
+        assert isinstance(config.voice_management, VoiceManagementConfig)
         assert config.voices == {}
         assert config.prosody == {}
 
@@ -338,5 +373,69 @@ prosody:
             assert len(config.voices) == 3
             assert len(config.prosody) == 3
             assert config.prosody["whispering"].volume == 0.6
+        finally:
+            temp_path.unlink()
+
+    def test_config_with_voice_management(self):
+        """Test configuration with voice_management section."""
+        yaml_content = """
+backend: piper
+voice_management:
+  bulk_download_language: en_US
+  bulk_download_quality: high
+  max_concurrent_downloads: 5
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = Path(f.name)
+
+        try:
+            config = Config.load(path=temp_path)
+            errors = config.validate()
+            assert errors == [], f"Validation errors: {errors}"
+
+            # Verify voice_management loaded correctly
+            assert config.voice_management.bulk_download_language == "en_US"
+            assert config.voice_management.bulk_download_quality == "high"
+            assert config.voice_management.max_concurrent_downloads == 5
+        finally:
+            temp_path.unlink()
+
+    def test_config_with_voice_management_partial(self):
+        """Test configuration with partial voice_management (only some fields)."""
+        yaml_content = """
+voice_management:
+  max_concurrent_downloads: 2
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = Path(f.name)
+
+        try:
+            config = Config.load(path=temp_path)
+            errors = config.validate()
+            assert errors == [], f"Validation errors: {errors}"
+
+            # Verify partial config with defaults for missing fields
+            assert config.voice_management.bulk_download_language is None
+            assert config.voice_management.bulk_download_quality is None
+            assert config.voice_management.max_concurrent_downloads == 2
+        finally:
+            temp_path.unlink()
+
+    def test_config_voice_management_validation_invalid(self):
+        """Test validation catches invalid voice_management values."""
+        yaml_content = """
+voice_management:
+  max_concurrent_downloads: 0
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = Path(f.name)
+
+        try:
+            config = Config.load(path=temp_path)
+            errors = config.validate()
+            assert any("max_concurrent_downloads" in err for err in errors)
         finally:
             temp_path.unlink()

@@ -14,18 +14,17 @@ from drinkingfountain.tts.cache import CachedTTSBackend
 from drinkingfountain.tts.piper import PiperTTSBackend
 from drinkingfountain.voices.manager import VoiceManager
 
-# Mock pydub if it's not available due to missing audioop (common in some Python builds)
-if "pydub" not in sys.modules:
+# Try to import pydub to check availability
+try:
+    import pydub  # noqa: F401
+except ImportError:
+    # pydub not available, create a mock to allow tests to run
     pydub_mock = ModuleType("pydub")
     audio_segment_mock = MagicMock()
     audio_segment_mock.from_file = MagicMock()
     audio_segment_mock.empty = MagicMock(return_value=MagicMock(duration_seconds=0))
-    pydub_mock.AudioSegment = audio_segment_mock  # type: ignore  # Injecting mock attribute into test double module
+    pydub_mock.AudioSegment = audio_segment_mock  # type: ignore
     sys.modules["pydub"] = pydub_mock
-else:
-    # pydub is available, but we still want to control its behavior in tests
-    # We'll patch specific methods as needed in each test
-    pass
 
 
 # Helper: create a mock AudioSegment
@@ -584,3 +583,92 @@ class TestVoiceManager:
         overrides = manager.get_overrides()
         overrides["Bob"] = "v2"  # Modify copy
         assert "Bob" not in manager.get_overrides()
+
+    def test_get_voice_for_character_caches_auto_assignment(self) -> None:
+        """Test that auto-assigned voice is cached for the character."""
+        mock_backend = MagicMock(spec=TTSBackend)
+        mock_backend.list_voices.return_value = ["voice1", "voice2"]
+        manager = VoiceManager(mock_backend)
+        manager.start_render()  # Start fresh render
+
+        # First call should pick and cache
+        voice1 = manager.get_voice_for_character("Charlie")
+        assert voice1 in {"voice1", "voice2"}
+
+        # Second call should return same cached voice
+        voice2 = manager.get_voice_for_character("Charlie")
+        assert voice2 == voice1
+
+    def test_start_render_clears_cache(self) -> None:
+        """Test that start_render() resets character voice cache."""
+        mock_backend = MagicMock(spec=TTSBackend)
+        mock_backend.list_voices.return_value = ["voice1", "voice2"]
+        manager = VoiceManager(mock_backend)
+        manager.start_render()
+
+        # Assign a voice
+        manager.get_voice_for_character("Alice")
+        assert "Alice" in manager._char_voice_cache
+
+        # New render clears cache
+        manager.start_render()
+        assert manager._char_voice_cache == {}
+        # Should be able to assign different voice (though random)
+        v2 = manager.get_voice_for_character("Alice")
+        # Could be same or different, but cache is fresh
+        assert v2 in {"voice1", "voice2"}
+
+    def test_narrator_voice_excluded_from_auto_pool(self) -> None:
+        """Test that narrator voice is not in auto-assignment pool."""
+        mock_backend = MagicMock(spec=TTSBackend)
+        mock_backend.list_voices.return_value = ["v1", "narrator_voice", "v2"]
+        manager = VoiceManager(mock_backend)
+        manager.start_render()
+        manager.set_narrator_voice("narrator_voice")
+
+        # Auto-assign should pick from v1 or v2 only
+        voice = manager.get_voice_for_character("Bob")
+        assert voice in {"v1", "v2"}
+        assert voice != "narrator_voice"
+
+    def test_narrator_exclusion_raises_if_pool_empty(self) -> None:
+        """Test that ValueError raised if all voices are excluded."""
+        mock_backend = MagicMock(spec=TTSBackend)
+        mock_backend.list_voices.return_value = ["narrator_only"]
+        manager = VoiceManager(mock_backend)
+        manager.start_render()
+        manager.set_narrator_voice("narrator_only")
+
+        with pytest.raises(
+            ValueError, match="No voices available for character assignment"
+        ):
+            manager.get_voice_for_character("Anyone")
+
+    def test_override_can_use_narrator_voice(self) -> None:
+        """Test that overrides can still use narrator voice (explicit choice)."""
+        mock_backend = MagicMock(spec=TTSBackend)
+        mock_backend.list_voices.return_value = ["v1", "narrator_voice"]
+        manager = VoiceManager(mock_backend)
+        manager.start_render()
+        manager.set_narrator_voice("narrator_voice")
+        manager.set_character_voice("Alice", "narrator_voice")  # Explicit override
+
+        # Should use narrator voice despite exclusion
+        assert manager.get_voice_for_character("Alice") == "narrator_voice"
+
+    def test_download_voice_clears_character_cache(self) -> None:
+        """Test that download_voice clears both auto pool and character cache."""
+        mock_backend = MagicMock(spec=TTSBackend)
+        mock_backend.list_voices.return_value = ["voice1"]
+        manager = VoiceManager(mock_backend)
+        manager.start_render()
+
+        # Populate auto pool and character cache
+        _ = manager.get_voice_for_character("Anyone")
+        assert manager._auto_pool == ["voice1"]
+        assert "Anyone" in manager._char_voice_cache
+
+        manager.download_voice("new_voice")
+        mock_backend.download_voice.assert_called_once_with("new_voice")
+        assert manager._auto_pool == []
+        assert manager._char_voice_cache == {}

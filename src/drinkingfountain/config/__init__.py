@@ -1,6 +1,13 @@
 """Configuration management for drinkingfountain."""
 
-from .settings import AudioConfig, Config, NarratorConfig, ProsodyConfig, TimingConfig
+from .settings import (
+    AudioConfig,
+    Config,
+    NarratorConfig,
+    ProsodyConfig,
+    TimingConfig,
+    VoiceManagementConfig,
+)
 
 __all__ = [
     "Config",
@@ -8,4 +15,5 @@ __all__ = [
     "TimingConfig",
     "ProsodyConfig",
     "NarratorConfig",
+    "VoiceManagementConfig",
 ]

@@ -157,6 +157,9 @@ class RenderService:
         script_obj = parser.parse(script_path)
         parse_time = time.perf_counter() - parse_start
 
+        # Reset voice manager for this render
+        self.voice_mgr.start_render()
+
         # Log script info
         logger.info("Script: %s", script_obj.title or "Untitled")
         logger.info("  Scenes: %d", len(script_obj.scenes))
@@ -213,6 +216,35 @@ class RenderService:
                         narrator_voice = available_voices[0]
                 else:
                     narrator_voice = available_voices[0]
+
+        # Set narrator voice in voice manager if narrator is enabled
+        if self.narrator_cfg.enabled and narrator_voice is not None:
+            # Check if narrator voice is the only available voice, which would leave
+            # no voices for characters. In that case, disable narrator to allow characters
+            # to use that voice.
+            available_voices_list = self.tts.list_voices()
+            remaining_voices = [v for v in available_voices_list if v != narrator_voice]
+            if not remaining_voices:
+                logger.warning(
+                    "Narrator voice '%s' is the only available voice. Disabling narrator to ensure characters have voices.",
+                    narrator_voice,
+                )
+                self.narrator_cfg.enabled = False
+            else:
+                try:
+                    self.voice_mgr.set_narrator_voice(narrator_voice)
+                except ValueError as e:
+                    # This should not happen due to pre-check, but handle defensively
+                    logger.warning(
+                        "Failed to set narrator voice: %s. Disabling narrator for this render.",
+                        e,
+                    )
+                    self.narrator_cfg.enabled = False
+
+        # Clear any premature character voice cache that may have been populated
+        # during the characters_without_voices check above. This ensures that
+        # narrator voice exclusion is properly respected in auto-assignment.
+        self.voice_mgr.start_render()
 
         # Prepare streaming output
         sample_rate = self.config.audio.sample_rate
@@ -404,7 +436,6 @@ class RenderService:
         self, writer: StreamingWAVWriter | StreamingAudioPlayer, duration: float
     ) -> None:
         """Add silence (silent audio segment) to the stream."""
-        from pydub import AudioSegment
 
         if duration <= 0:
             return
@@ -417,17 +448,6 @@ class RenderService:
         else:
             silence = silence.set_channels(2)
         writer.write_audio(silence)
-
-    def _add_audio_with_pause(
-        self,
-        writer: StreamingWAVWriter | StreamingAudioPlayer,
-        audio: AudioSegment,
-        pause_duration: float,
-    ) -> None:
-        """Add a pause followed by audio to the stream."""
-        if pause_duration > 0:
-            self._add_silence(writer, pause_duration)
-        writer.write_audio(audio)
 
 
 class VoiceService:

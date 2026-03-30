@@ -123,6 +123,12 @@ timing:
   pause_after_scene_heading: 1.0  # Pause after scene heading
   pause_between_scenes: 2.0      # Pause when entering new scene
 
+# Voice management settings
+voice_management:
+  bulk_download_language: en_US
+  bulk_download_quality: medium
+  max_concurrent_downloads: 3
+
 # Character voice assignments
 # Map character names (exactly as in script) to voice IDs
 voices:
@@ -145,10 +151,21 @@ prosody:
 
 ### Voice Mapping
 
-The `voices` section lets you assign specific Piper voice models to characters. Character names must match exactly as they appear in the Fountain script (case-sensitive). If a character has no explicit mapping, DrinkingFountain will:
+The `voices` section lets you assign specific Piper voice models to characters. Character names must match exactly as they appear in the Fountain script (case-sensitive).
 
-1. Use the default voice if set (via `VoiceManager.set_default_voice()`)
-2. Otherwise, randomly select from available voices
+**Overrides**: Explicit voice assignments always take precedence and work exactly as before.
+
+**Auto-assignment**: For characters without explicit mapping:
+- A voice is randomly selected from the available voices (excluding the narrator voice if one is configured)
+- The selection is cached per character and reused consistently across all scenes
+- This ensures character voice consistency throughout the production
+
+**Narrator handling**: If you have a `NARRATOR` role in your script:
+- The narrator's voice is reserved and will never be auto-assigned to any character
+- You must explicitly assign a voice to `NARRATOR` in the config if you want narration
+- If only one voice is available and a narrator is detected, the narrator role is automatically disabled to avoid conflicts
+
+**Default voice**: If you set a default voice via `VoiceManager.set_default_voice()`, it will be used for any character without explicit mapping, provided no other voices are available.
 
 ### Audio Settings
 
@@ -166,6 +183,91 @@ Fine-tune the pacing of your audio production:
 - **pause_between_scenes**: Extra pause when transitioning between scenes (default: 2.0s)
 
 All timing values are in seconds and can be fractional (e.g., `0.25`).
+
+---
+
+## Voice Management
+
+DrinkingFountain includes advanced voice management features that ensure consistent character voices across your entire production and simplify voice model management.
+
+### Consistent Voice Assignment
+
+Characters now maintain the same voice across all scenes in a render. When a voice is assigned to a character (either via explicit mapping or auto-assignment), that choice is cached and reused consistently throughout the entire script. This creates a more professional and coherent listening experience, as characters don't suddenly sound different when they appear in later scenes.
+
+### Narrator Voice Isolation
+
+The narrator's voice is automatically reserved and will never be auto-assigned to any character. This ensures that if you have a NARRATOR role in your script, its voice assignment remains exclusively yours to configure. The narrator voice is completely excluded from the pool of available voices during character auto-assignment.
+
+### Voice Caching
+
+Voice assignments are cached per character during a render. This means:
+- The first time a character appears, a voice is selected (either from explicit mapping or randomly from available voices)
+- That same voice is used for all subsequent appearances of that character
+- The cache is cleared between renders, allowing you to change assignments for next render
+
+This caching happens transparently and doesn't require any configuration.
+
+### Bulk Voice Download
+
+Download multiple voice models efficiently with the new bulk download command.
+
+#### Command: `drinkingfountain voices download-bulk`
+
+Downloads all available voice models for a specific language and quality from the Piper catalog.
+
+```bash
+drinkingfountain voices download-bulk [OPTIONS]
+```
+
+**Options**:
+- `-l, --language CODE`: Language code (e.g., `en_US`, `fr_FR`). Required.
+- `-q, --quality {x-low,low,medium,high,x-high}`: Quality level. Default: `medium`.
+- `-w, --max-workers N`: Maximum concurrent downloads. Default: `3`.
+- `--stop-on-error`: Stop if any download fails (default: continue on error)
+- `--voices-dir PATH`: Directory to store voices (overrides default)
+
+**Configuration defaults**:
+You can set default values in `.drinkingfountain.yaml` to avoid repeating options:
+
+```yaml
+voice_management:
+  bulk_download_language: en_US
+  bulk_download_quality: medium
+  max_concurrent_downloads: 3
+```
+
+With these defaults, you can simply run `drinkingfountain voices download-bulk` without options.
+
+**Examples**:
+
+Download all English (US) voices at medium quality:
+```bash
+drinkingfountain voices download-bulk --language en_US --quality medium
+```
+
+Download French voices with 5 concurrent workers, stopping on errors:
+```bash
+drinkingfountain voices download-bulk -l fr_FR -w 5 --stop-on-error
+```
+
+Use config defaults (if set in `.drinkingfountain.yaml`):
+```bash
+drinkingfountain voices download-bulk
+```
+
+**What it does**: This command queries the Piper voice catalog, filters by the specified language and quality, and downloads all matching voice models in parallel. It's useful for setting up a complete voice library for a particular language or quality tier.
+
+---
+
+### Backward Compatibility
+
+All new voice management features are fully backward compatible:
+- Existing configuration files work unchanged
+- Voice assignment overrides continue to function as before
+- The narrator isolation and caching are automatic—no configuration needed
+- Bulk download is an optional CLI command, not required for normal operation
+
+You can adopt these features gradually without disrupting your existing workflow.
 
 ---
 
@@ -273,6 +375,48 @@ drinkingfountain voices download VOICE_ID [--voices-dir PATH]
 drinkingfountain voices download en_US-amy-medium
 drinkingfountain voices download en_GB-james-high
 drinkingfountain voices download fr_FR-henri-medium
+```
+
+#### `drinkingfountain voices download-bulk`
+
+Download all voice models for a specific language and quality from the Piper catalog.
+
+```bash
+drinkingfountain voices download-bulk [OPTIONS]
+```
+
+**Options**:
+- `-l, --language CODE`: Language code (e.g., `en_US`, `fr_FR`). Required.
+- `-q, --quality {x-low,low,medium,high,x-high}`: Quality level. Default: `medium`.
+- `-w, --max-workers N`: Maximum concurrent downloads. Default: `3`.
+- `--stop-on-error`: Stop if any download fails (default: continue on error)
+- `--voices-dir PATH`: Directory to store voices (overrides default)
+
+**Configuration defaults**:
+Set defaults in `.drinkingfountain.yaml`:
+
+```yaml
+voice_management:
+  bulk_download_language: en_US
+  bulk_download_quality: medium
+  max_concurrent_downloads: 3
+```
+
+**Examples**:
+
+Download all English (US) voices at medium quality:
+```bash
+drinkingfountain voices download-bulk --language en_US --quality medium
+```
+
+Download French voices with 5 concurrent workers, stopping on errors:
+```bash
+drinkingfountain voices download-bulk -l fr_FR -w 5 --stop-on-error
+```
+
+Use config defaults (if set):
+```bash
+drinkingfountain voices download-bulk
 ```
 
 #### `drinkingfountain voices test`

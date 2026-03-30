@@ -5,6 +5,8 @@ import logging
 import subprocess
 import sys
 import wave
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -180,6 +182,8 @@ class PiperTTSBackend(TTSBackend):
                 text=True,
             )
             logger.info("Downloaded voice '%s' to %s", voice, download_dir)
+            # Invalidate cached voice list so newly downloaded voice is recognized
+            self._cached_voice_list = None
         except subprocess.CalledProcessError as e:
             logger.error(
                 "Failed to download voice '%s': exit code %d, stderr: %s",
@@ -327,3 +331,147 @@ class PiperTTSBackend(TTSBackend):
         except Exception as e:
             logger.error("TTS synthesis failed for voice '%s': %s", voice, e)
             raise RuntimeError(f"Synthesis failed: {e}") from e
+
+    def download_voices_bulk(
+        self,
+        voices: list[str],
+        max_workers: int = 3,
+        progress_callback: Callable[[int, int], None] | None = None,
+        stop_on_error: bool = False,
+    ) -> tuple[int, int]:
+        """Download multiple voice models in parallel.
+
+        Args:
+            voices: List of voice identifiers to download.
+            max_workers: Maximum number of concurrent downloads (default: 3).
+            progress_callback: Optional callback(completed, total) invoked after each
+                             voice download completes (success or failure). The
+                             completed count includes both successful and failed downloads.
+            stop_on_error: If True, stop all downloads on the first error and raise.
+                          If False (default), continue downloading remaining voices.
+
+        Returns:
+            A tuple (success_count, failure_count).
+
+        Raises:
+            RuntimeError: If stop_on_error=True and any download fails, or if
+                         Piper TTS is not installed.
+            ValueError: If the voices list is empty (returns (0, 0) instead).
+        """
+        if not voices:
+            return (0, 0)
+
+        total = len(voices)
+        completed = 0
+        failed = 0
+        first_error: Exception | None = None
+
+        # Use ThreadPoolExecutor for parallel downloads
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all download tasks
+            future_to_voice = {
+                executor.submit(self.download_voice, voice): voice for voice in voices
+            }
+
+            # Process results as they complete
+            for future in as_completed(future_to_voice):
+                voice = future_to_voice[future]
+                try:
+                    future.result()  # Will raise if download failed
+                    completed += 1
+                    logger.info("Successfully downloaded voice '%s'", voice)
+                except Exception as e:
+                    failed += 1
+                    logger.error("Failed to download voice '%s': %s", voice, e)
+                    if stop_on_error and first_error is None:
+                        first_error = e
+                        # Cancel all pending futures
+                        for f in future_to_voice:
+                            f.cancel()
+                        # Break out of the loop; remaining futures may still run but we won't wait for them
+                        break
+
+                # Invoke progress callback if provided
+                if progress_callback:
+                    try:
+                        progress_callback(completed + failed, total)
+                    except Exception as e:
+                        logger.warning("Progress callback raised exception: %s", e)
+
+        # Clear voice cache to force refresh after bulk operation
+        self._voice_cache.clear()
+        # Invalidate cached voice list so newly downloaded voices are recognized
+        self._cached_voice_list = None
+
+        # If stop_on_error and an error occurred, raise now
+        if stop_on_error and first_error is not None:
+            raise RuntimeError(
+                f"Bulk download stopped due to error: {first_error}"
+            ) from first_error
+
+        logger.info(
+            "Bulk download completed: %d successful, %d failed",
+            completed,
+            failed,
+        )
+        return (completed, failed)
+
+    def download_voices_by_language(
+        self,
+        language: str,
+        quality: str | None = None,
+        max_workers: int = 3,
+        progress_callback: Callable[[int, int], None] | None = None,
+        stop_on_error: bool = False,
+    ) -> tuple[int, int]:
+        """Download all voices for a given language (and optional quality) in bulk.
+
+        This convenience method queries Piper's voice catalog, filters voices by
+        language and quality, then downloads them using parallel execution.
+
+        Args:
+            language: Language code (e.g., "en_US", "fr_FR"). Voices whose ID
+                     starts with this string will be selected.
+            quality: Optional quality level (e.g., "medium", "high"). If provided,
+                    only voices ending with "-{quality}" will be selected.
+            max_workers: Maximum number of concurrent downloads (default: 3).
+            progress_callback: Optional callback(completed, total) for progress updates.
+            stop_on_error: If True, stop all downloads on first error. If False
+                          (default), continue and return counts of successes/failures.
+
+        Returns:
+            Tuple (success_count, failure_count) from the bulk download operation.
+
+        Raises:
+            RuntimeError: If the voice catalog cannot be fetched or if stop_on_error=True
+                         and any download fails.
+        """
+        # Get all available voices from Piper
+        all_voices = self.list_available_voices()
+
+        # Filter by language prefix and optional quality suffix
+        if quality:
+            quality_suffix = f"-{quality}"
+            filtered_voices = [
+                v
+                for v in all_voices
+                if v.startswith(language) and v.endswith(quality_suffix)
+            ]
+        else:
+            filtered_voices = [v for v in all_voices if v.startswith(language)]
+
+        if not filtered_voices:
+            logger.warning(
+                "No voices found for language '%s'%s. Nothing to download.",
+                language,
+                f" with quality '{quality}'" if quality else "",
+            )
+            return (0, 0)
+
+        # Perform bulk download
+        return self.download_voices_bulk(
+            filtered_voices,
+            max_workers=max_workers,
+            progress_callback=progress_callback,
+            stop_on_error=stop_on_error,
+        )

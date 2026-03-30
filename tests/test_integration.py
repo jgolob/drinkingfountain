@@ -8,6 +8,7 @@ voice manager, mixer) work together correctly in a realistic scenario.
 """
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 from pydub import AudioSegment
@@ -15,9 +16,15 @@ from pydub import AudioSegment
 from drinkingfountain.audio.mixer import AudioConfig as MixerAudioConfig
 from drinkingfountain.audio.mixer import AudioMixer
 from drinkingfountain.audio.mixer import TimingConfig as MixerTimingConfig
-from drinkingfountain.config.settings import AudioConfig, Config, TimingConfig
+from drinkingfountain.config.settings import (
+    AudioConfig,
+    Config,
+    NarratorConfig,
+    TimingConfig,
+)
 from drinkingfountain.parser.fountain import FountainParser
 from drinkingfountain.parser.script import Dialogue, SceneHeading
+from drinkingfountain.services import RenderService
 from drinkingfountain.tts.base import TTSBackend
 from drinkingfountain.voices.manager import VoiceManager
 
@@ -692,3 +699,223 @@ class TestErrorScenarios:
                     voice = voice_manager.get_voice_for_character(block.character)
                     audio = empty_tts.generate_audio(block.content, voice)
                     mixer.add_dialogue(block, audio)
+
+
+class TestRenderServiceWithVoiceManager:
+    """Integration tests for RenderService with the updated VoiceManager integration."""
+
+    @pytest.fixture
+    def render_service(
+        self, voice_manager: VoiceManager, minimal_config: Config, tmp_path: Path
+    ) -> RenderService:
+        """Create a RenderService instance with mock TTS and voice manager."""
+        # Wrap the voice_manager's backend in CachedTTSBackend as RenderService expects
+        from drinkingfountain.tts import CachedTTSBackend
+
+        # Use a temporary cache directory to avoid persistent cache between tests
+        cache_dir = tmp_path / "tts_cache"
+        cached_tts = CachedTTSBackend(voice_manager.backend, cache_dir=cache_dir)
+        # Create a fresh config with narrator disabled by default
+        config = Config(
+            backend="mock",
+            audio=minimal_config.audio,
+            timing=minimal_config.timing,
+            voices={},  # Empty by default, tests will set as needed
+            narrator=NarratorConfig(
+                enabled=False,
+                voice=None,
+                expand_int_ext=True,
+                pause_after_heading=None,
+                pause_before_narrative=0.5,
+                pause_after_narrative=0.5,
+            ),
+        )
+        return RenderService(
+            config=config,
+            tts=cached_tts,
+            voice_mgr=voice_manager,
+            narrator_cfg=config.narrator,
+            no_narrator=True,
+        )
+
+    def test_consistent_voice_assignment_across_scenes(
+        self,
+        tmp_path: Path,
+        render_service: RenderService,
+    ):
+        """Test that the same character gets the same voice across multiple scenes."""
+        # Create a script with the same character appearing in multiple scenes
+        script_content = """INT. ROOM - DAY
+
+JOHN
+Hello.
+
+EXT. PARK - NIGHT
+
+JOHN
+How are you?
+
+INT. HOUSE - DAY
+
+JOHN
+I'm fine.
+"""
+        script_path = tmp_path / "multi_scene.fountain"
+        script_path.write_text(script_content)
+
+        # Set up voice manager with auto-assignment (no overrides)
+        # The voice manager should assign a consistent voice to JOHN across all scenes
+        render_service.voice_mgr.start_render()
+
+        # Render the script
+        render_service.render(script_path, output=None)
+
+        # Verify that all TTS calls used the same voice (all for JOHN)
+        # Since we have 3 dialogue blocks all from JOHN, all should have same voice
+        backend = cast(MockTTSBackend, render_service.voice_mgr.backend)
+        assert len(backend.calls) == 3, (
+            f"Expected 3 dialogue calls, got {len(backend.calls)}"
+        )
+        # All voices should be identical
+        voices = [voice for text, voice in backend.calls]
+        assert len(set(voices)) == 1, (
+            "Same character should have consistent voice across scenes"
+        )
+
+    def test_narrator_voice_excluded_from_auto_assignment(
+        self,
+        tmp_path: Path,
+        render_service: RenderService,
+    ):
+        """Test that narrator voice is excluded from character auto-assignment."""
+        # Create a simple script with two characters
+        script_content = """INT. ROOM - DAY
+
+JOHN
+Hello.
+
+MARY
+Hi there.
+"""
+        script_path = tmp_path / "simple.fountain"
+        script_path.write_text(script_content)
+
+        # Configure narrator to use a specific voice that exists in the mock TTS
+        # We'll modify the render_service's narrator config to enable narrator
+        render_service.narrator_cfg.enabled = True
+        render_service.narrator_cfg.voice = "narrator_voice"
+
+        # Add the narrator_voice to the mock TTS available voices
+        backend = cast(MockTTSBackend, render_service.voice_mgr.backend)
+        backend.available_voices = ["voice1", "voice2", "narrator_voice"]
+
+        # No explicit voice assignments - both JOHN and MARY should auto-assign
+        # from the pool excluding narrator_voice
+        render_service.voice_mgr.start_render()
+
+        # Render the script
+        render_service.render(script_path, output=None)
+
+        # The TTS calls include both scene heading narration (using narrator_voice)
+        # and dialogue (using character voices). We only care about dialogue voices.
+        dialogue_texts = {"Hello.", "Hi there."}
+        dialogue_voices = [
+            voice for text, voice in backend.calls if text in dialogue_texts
+        ]
+
+        # Check that all character voices used are not the narrator_voice
+        for voice in dialogue_voices:
+            assert voice != "narrator_voice", (
+                f"Character voice {voice} should not be narrator_voice"
+            )
+
+        # Also verify that we have exactly 2 dialogue calls (one for each character)
+        assert len(dialogue_voices) == 2
+
+    def test_narrator_voice_only_one_available_disables_narrator(
+        self,
+        tmp_path: Path,
+        render_service: RenderService,
+        caplog,
+    ):
+        """Test that if only one voice exists and it's used for narrator, narrator is disabled with warning."""
+        # Create a simple script
+        script_content = """INT. ROOM - DAY
+
+JOHN
+Hello.
+"""
+        script_path = tmp_path / "simple.fountain"
+        script_path.write_text(script_content)
+
+        # Configure TTS to have only one voice
+        backend = cast(MockTTSBackend, render_service.voice_mgr.backend)
+        backend.available_voices = ["only_voice"]
+
+        # Configure narrator to use that only voice
+        render_service.narrator_cfg.enabled = True
+        render_service.narrator_cfg.voice = "only_voice"
+
+        # No explicit voice assignment for JOHN - will auto-assign
+        render_service.voice_mgr.start_render()
+
+        # Render should succeed, and narrator should be disabled because
+        # the only voice is excluded from character auto-assignment pool,
+        # making the pool empty. This should trigger a ValueError in set_narrator_voice,
+        # which RenderService should catch and disable narrator.
+        render_service.render(script_path, output=None)
+
+        # Check that narrator was disabled (narrator_cfg.enabled should be False)
+        assert not render_service.narrator_cfg.enabled
+
+        # Check that a warning was logged about the only voice
+        assert any(
+            "only available voice" in record.message for record in caplog.records
+        )
+
+        # The render should have completed successfully with character voice assigned
+        # Since only_voice is the only available, and narrator tried to use it,
+        # the auto-assignment for JOHN would fail if narrator was enabled.
+        # But since narrator got disabled, the auto-assignment pool includes only_voice.
+        # So JOHN should get "only_voice"
+        assert len(backend.calls) == 1  # One dialogue call
+        assert backend.calls[0][0] == "Hello."  # Text matches
+        # The voice used should be only_voice
+        assert backend.calls[0][1] == "only_voice"
+
+    def test_narrator_voice_can_still_be_used_by_override(
+        self,
+        tmp_path: Path,
+        render_service: RenderService,
+    ):
+        """Test that narrator voice can still be used if explicitly assigned to a character."""
+        script_content = """INT. ROOM - DAY
+
+JOHN
+Hello.
+"""
+        script_path = tmp_path / "simple.fountain"
+        script_path.write_text(script_content)
+
+        backend = cast(MockTTSBackend, render_service.voice_mgr.backend)
+        backend.available_voices = ["voice1", "narrator_voice"]
+
+        # Enable narrator with narrator_voice
+        render_service.narrator_cfg.enabled = True
+        render_service.narrator_cfg.voice = "narrator_voice"
+
+        # Explicitly assign narrator_voice to JOHN
+        render_service.voice_mgr.set_character_voice("JOHN", "narrator_voice")
+
+        render_service.voice_mgr.start_render()
+
+        render_service.render(script_path, output=None)
+
+        # There will be two TTS calls: one for scene heading (narrator) and one for dialogue (JOHN).
+        # Both will use narrator_voice. We only need to verify that the dialogue call uses narrator_voice.
+        dialogue_texts = {"Hello."}
+        dialogue_calls = [
+            (text, voice) for text, voice in backend.calls if text in dialogue_texts
+        ]
+        assert len(dialogue_calls) == 1
+        assert dialogue_calls[0][1] == "narrator_voice"

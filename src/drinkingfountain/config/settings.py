@@ -63,6 +63,34 @@ class NarratorConfig:
 
 
 @dataclass
+class VoiceManagementConfig:
+    """Configuration for voice management and bulk download operations.
+
+    Attributes:
+        bulk_download_language: Default language code for bulk voice downloads
+            (e.g., "en_US", "es_ES"). If None, uses system default.
+        bulk_download_quality: Default quality preset for bulk voice downloads.
+            Supported values: "x-low", "low", "medium", "high", "x-high". If None, uses system default.
+        max_concurrent_downloads: Maximum number of parallel download workers.
+            Higher values increase parallelism but may strain network/resources.
+    """
+
+    bulk_download_language: str | None = None
+    bulk_download_quality: str | None = None
+    max_concurrent_downloads: int = 3
+
+    def __post_init__(self) -> None:
+        """Validate configuration values."""
+        if self.bulk_download_quality is not None:
+            allowed_qualities = {"x-low", "low", "medium", "high", "x-high"}
+            if self.bulk_download_quality not in allowed_qualities:
+                raise ValueError(
+                    f"Invalid bulk_download_quality: {self.bulk_download_quality}. "
+                    f"Must be one of {sorted(allowed_qualities)} or None."
+                )
+
+
+@dataclass
 class AudioConfig:
     """Audio output configuration.
 
@@ -112,6 +140,8 @@ class Config:
         voices: Mapping of character names to voice IDs
         prosody: Mapping of parenthetical cues to prosody parameters
         narrator: Narrator configuration for reading stage directions and scene headings
+        voice_management: Voice management configuration for bulk downloads and
+            parallel operations
     """
 
     backend: str = "piper"
@@ -120,6 +150,9 @@ class Config:
     voices: dict[str, str] = field(default_factory=dict)
     prosody: dict[str, ProsodyConfig] = field(default_factory=dict)
     narrator: NarratorConfig = field(default_factory=NarratorConfig)
+    voice_management: VoiceManagementConfig = field(
+        default_factory=VoiceManagementConfig
+    )
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
@@ -189,11 +222,19 @@ class Config:
         voices_data = data.get("voices", {})
         prosody_data = data.get("prosody", {})
         narrator_data = data.get("narrator", {})
+        voice_management_data = data.get("voice_management", {})
 
         # Build config objects
         audio_config = AudioConfig(**audio_data) if audio_data else AudioConfig()
         timing_config = TimingConfig(**timing_data) if timing_data else TimingConfig()
-        narrator_config = NarratorConfig(**narrator_data) if narrator_data else NarratorConfig()
+        narrator_config = (
+            NarratorConfig(**narrator_data) if narrator_data else NarratorConfig()
+        )
+        voice_management_config = (
+            VoiceManagementConfig(**voice_management_data)
+            if voice_management_data
+            else VoiceManagementConfig()
+        )
 
         # Build prosody dict
         prosody_configs = {}
@@ -211,6 +252,7 @@ class Config:
             voices=voices_data,
             prosody=prosody_configs,
             narrator=narrator_config,
+            voice_management=voice_management_config,
         )
 
     def validate(self) -> list[str]:
@@ -283,6 +325,13 @@ class Config:
             self.narrator.__post_init__()
         except ValueError as e:
             errors.append(f"Narrator configuration error: {e}")
+
+        # Validate voice management settings
+        if self.voice_management.max_concurrent_downloads < 1:
+            errors.append(
+                f"Invalid max_concurrent_downloads: {self.voice_management.max_concurrent_downloads}. "
+                "Must be at least 1."
+            )
 
         # Validate backend
         valid_backends = ("piper", "coqui", "transformers")

@@ -403,6 +403,305 @@ class TestVoicesCommand:
         assert "Error: Piper TTS is not installed" in result.output
 
 
+class TestVoicesDownloadBulkCommand:
+    """Test the voices download-bulk command."""
+
+    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.cli.Config")
+    def test_voices_download_bulk_success(
+        self,
+        mock_config_class: MagicMock,
+        mock_piper_class: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """Test successful bulk download with mocked backend."""
+        # Mock config with no defaults (CLI provides all)
+        mock_config = MagicMock()
+        mock_config.voice_management.bulk_download_language = None
+        mock_config.voice_management.bulk_download_quality = None
+        mock_config.voice_management.max_concurrent_downloads = 3
+        mock_config_class.load.return_value = mock_config
+
+        # Mock piper instance
+        mock_piper = MagicMock()
+        mock_piper.download_voices_by_language.return_value = (5, 0)
+        mock_piper_class.return_value = mock_piper
+
+        result = runner.invoke(
+            cli,
+            [
+                "voices",
+                "download-bulk",
+                "--language",
+                "en_US",
+                "--quality",
+                "medium",
+                "--max-workers",
+                "2",
+            ],
+        )
+
+        assert result.exit_code == 0, (
+            f"Output: {result.output}\nError: {result.exception}"
+        )
+        assert (
+            "Starting bulk download for language 'en_US' (quality: medium)..."
+            in result.output
+        )
+        assert "Max concurrent workers: 2" in result.output
+        assert "Stop on error: False" in result.output
+        assert "Bulk download complete!" in result.output
+        assert "Successfully downloaded: 5 voices" in result.output
+        assert "Failed: 0 voices" in result.output
+
+        mock_piper.download_voices_by_language.assert_called_once()
+        call_args = mock_piper.download_voices_by_language.call_args
+        assert call_args.kwargs["language"] == "en_US"
+        assert call_args.kwargs["quality"] == "medium"
+        assert call_args.kwargs["max_workers"] == 2
+        assert call_args.kwargs["stop_on_error"] is False
+        # Progress callback should be provided
+        assert call_args.kwargs["progress_callback"] is not None
+
+    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.cli.Config")
+    def test_voices_download_bulk_with_failures(
+        self,
+        mock_config_class: MagicMock,
+        mock_piper_class: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """Test bulk download with some failures."""
+        mock_config = MagicMock()
+        mock_config.voice_management.bulk_download_language = None
+        mock_config.voice_management.bulk_download_quality = None
+        mock_config.voice_management.max_concurrent_downloads = 3
+        mock_config_class.load.return_value = mock_config
+
+        mock_piper = MagicMock()
+        mock_piper.download_voices_by_language.return_value = (3, 2)
+        mock_piper_class.return_value = mock_piper
+
+        result = runner.invoke(cli, ["voices", "download-bulk", "--language", "en_US"])
+
+        assert result.exit_code == 0, (
+            f"Output: {result.output}\nError: {result.exception}"
+        )
+        assert "Successfully downloaded: 3 voices" in result.output
+        assert "Failed: 2 voices" in result.output
+
+    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.cli.Config")
+    def test_voices_download_bulk_uses_config_defaults(
+        self,
+        mock_config_class: MagicMock,
+        mock_piper_class: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """Test that config defaults are used when CLI options not provided."""
+        mock_config = MagicMock()
+        mock_config.voice_management.bulk_download_language = "fr_FR"
+        mock_config.voice_management.bulk_download_quality = "high"
+        mock_config.voice_management.max_concurrent_downloads = 5
+        mock_config_class.load.return_value = mock_config
+
+        mock_piper = MagicMock()
+        mock_piper.download_voices_by_language.return_value = (2, 0)
+        mock_piper_class.return_value = mock_piper
+
+        result = runner.invoke(cli, ["voices", "download-bulk"])
+
+        assert result.exit_code == 0, (
+            f"Output: {result.output}\nError: {result.exception}"
+        )
+        assert (
+            "Starting bulk download for language 'fr_FR' (quality: high)..."
+            in result.output
+        )
+        assert "Max concurrent workers: 5" in result.output
+
+        mock_piper.download_voices_by_language.assert_called_once()
+        call_args = mock_piper.download_voices_by_language.call_args
+        assert call_args.kwargs["language"] == "fr_FR"
+        assert call_args.kwargs["quality"] == "high"
+        assert call_args.kwargs["max_workers"] == 5
+
+    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.cli.Config")
+    def test_voices_download_bulk_cli_overrides_config(
+        self,
+        mock_config_class: MagicMock,
+        mock_piper_class: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """Test CLI options override config."""
+        mock_config = MagicMock()
+        mock_config.voice_management.bulk_download_language = "en_US"
+        mock_config.voice_management.bulk_download_quality = "low"
+        mock_config.voice_management.max_concurrent_downloads = 3
+        mock_config_class.load.return_value = mock_config
+
+        mock_piper = MagicMock()
+        mock_piper.download_voices_by_language.return_value = (1, 0)
+        mock_piper_class.return_value = mock_piper
+
+        result = runner.invoke(
+            cli,
+            [
+                "voices",
+                "download-bulk",
+                "--language",
+                "fr_FR",
+                "--quality",
+                "high",
+                "--max-workers",
+                "10",
+            ],
+        )
+
+        assert result.exit_code == 0, (
+            f"Output: {result.output}\nError: {result.exception}"
+        )
+        assert (
+            "Starting bulk download for language 'fr_FR' (quality: high)..."
+            in result.output
+        )
+        assert "Max concurrent workers: 10" in result.output
+
+        call_args = mock_piper.download_voices_by_language.call_args
+        assert call_args.kwargs["language"] == "fr_FR"
+        assert call_args.kwargs["quality"] == "high"
+        assert call_args.kwargs["max_workers"] == 10
+
+    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.cli.Config")
+    def test_voices_download_bulk_requires_language(
+        self,
+        mock_config_class: MagicMock,
+        mock_piper_class: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """Test that language is required if no config default."""
+        mock_config = MagicMock()
+        mock_config.voice_management.bulk_download_language = None
+        mock_config.voice_management.bulk_download_quality = None
+        mock_config.voice_management.max_concurrent_downloads = 3
+        mock_config_class.load.return_value = mock_config
+
+        result = runner.invoke(cli, ["voices", "download-bulk"])
+
+        assert result.exit_code == 1
+        assert (
+            "Language must be specified via --language option or configured in config file"
+            in result.output
+        )
+        mock_piper_class.assert_not_called()
+
+    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.cli.Config")
+    def test_voices_download_bulk_stop_on_error(
+        self,
+        mock_config_class: MagicMock,
+        mock_piper_class: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """Test stop-on-error flag behavior."""
+        mock_config = MagicMock()
+        mock_config.voice_management.bulk_download_language = None
+        mock_config.voice_management.bulk_download_quality = None
+        mock_config.voice_management.max_concurrent_downloads = 3
+        mock_config_class.load.return_value = mock_config
+
+        mock_piper = MagicMock()
+
+        # Simulate that download_voices_by_language raises when stop_on_error=True
+        def raise_on_error(**kwargs):
+            if kwargs.get("stop_on_error"):
+                raise RuntimeError("Download failed")
+            return (1, 1)
+
+        mock_piper.download_voices_by_language.side_effect = raise_on_error
+        mock_piper_class.return_value = mock_piper
+
+        # Without --stop-on-error: should continue and return counts
+        result = runner.invoke(cli, ["voices", "download-bulk", "--language", "en_US"])
+        assert result.exit_code == 0
+        assert "Successfully downloaded: 1 voices" in result.output
+        assert "Failed: 1 voices" in result.output
+
+        # With --stop-on-error: should raise and exit with error
+        result = runner.invoke(
+            cli, ["voices", "download-bulk", "--language", "en_US", "--stop-on-error"]
+        )
+        assert result.exit_code == 1
+        assert "Error:" in result.output
+
+    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.cli.Config")
+    def test_voices_download_bulk_progress_callback(
+        self,
+        mock_config_class: MagicMock,
+        mock_piper_class: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """Test progress updates are displayed."""
+        mock_config = MagicMock()
+        mock_config.voice_management.bulk_download_language = None
+        mock_config.voice_management.bulk_download_quality = None
+        mock_config.voice_management.max_concurrent_downloads = 3
+        mock_config_class.load.return_value = mock_config
+
+        # Create a mock that calls the progress callback
+        mock_piper = MagicMock()
+        call_count = 0
+
+        def mock_download(**kwargs):
+            nonlocal call_count
+            progress_cb = kwargs.get("progress_callback")
+            if progress_cb:
+                # Simulate progress updates
+                progress_cb(1, 3)
+                progress_cb(2, 3)
+                progress_cb(3, 3)
+            return (3, 0)
+
+        mock_piper.download_voices_by_language.side_effect = mock_download
+        mock_piper_class.return_value = mock_piper
+
+        result = runner.invoke(cli, ["voices", "download-bulk", "--language", "en_US"])
+
+        assert result.exit_code == 0
+        # Check that progress messages appear
+        assert "Progress: 1/3 voices downloaded..." in result.output
+        assert "Progress: 2/3 voices downloaded..." in result.output
+        assert "Progress: 3/3 voices downloaded..." in result.output
+
+    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.cli.Config")
+    def test_voices_download_bulk_keyboard_interrupt(
+        self,
+        mock_config_class: MagicMock,
+        mock_piper_class: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """Test graceful handling of Ctrl+C."""
+        mock_config = MagicMock()
+        mock_config.voice_management.bulk_download_language = None
+        mock_config.voice_management.bulk_download_quality = None
+        mock_config.voice_management.max_concurrent_downloads = 3
+        mock_config_class.load.return_value = mock_config
+
+        mock_piper = MagicMock()
+        mock_piper.download_voices_by_language.side_effect = KeyboardInterrupt
+        mock_piper_class.return_value = mock_piper
+
+        result = runner.invoke(cli, ["voices", "download-bulk", "--language", "en_US"])
+
+        # Should exit with code 130 (SIGINT)
+        assert result.exit_code == 130
+        assert "Download interrupted by user" in result.output
+
+
 class TestPlayMixFunction:
     """Tests for the _play_mix helper function."""
 

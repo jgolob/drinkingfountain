@@ -17,20 +17,6 @@ from drinkingfountain.tts import CachedTTSBackend, PiperTTSBackend
 from drinkingfountain.voices import VoiceManager
 
 
-def setup_logging(verbose: bool) -> None:
-    """Configure logging based on verbosity flag.
-
-    Args:
-        verbose: If True, set logging level to DEBUG, otherwise INFO.
-    """
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-
 def _play_mix(audio) -> None:
     """Play an audio segment through the default audio device.
 
@@ -70,6 +56,20 @@ def _play_mix(audio) -> None:
     except Exception as e:
         click.echo(f"Error during playback: {e}", err=True)
         sys.exit(1)
+
+
+def setup_logging(verbose: bool) -> None:
+    """Configure logging based on verbosity flag.
+
+    Args:
+        verbose: If True, set logging level to DEBUG, otherwise INFO.
+    """
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
 
 @click.group()
@@ -398,6 +398,165 @@ def voices_test(
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+
+
+@voices.command("download-bulk")
+@click.option(
+    "--language",
+    "-l",
+    type=str,
+    help="Language code (e.g., 'en_US', 'fr_FR'). Required unless configured in config file.",
+)
+@click.option(
+    "--quality",
+    "-q",
+    type=click.Choice(
+        ["x-low", "low", "medium", "high", "x-high"], case_sensitive=False
+    ),
+    help="Quality level for voice models.",
+)
+@click.option(
+    "--max-workers",
+    "-w",
+    type=int,
+    help="Maximum number of concurrent downloads (default: 3 or from config).",
+)
+@click.option(
+    "--stop-on-error",
+    is_flag=True,
+    help="Stop all downloads on the first error. Default: continue on errors.",
+)
+@click.option(
+    "--config",
+    type=click.Path(exists=True),
+    help="Configuration file path",
+)
+@click.pass_context
+def voices_download_bulk(
+    ctx: click.Context,
+    language: str | None,
+    quality: str | None,
+    max_workers: int | None,
+    stop_on_error: bool,
+    config: str | None,
+) -> None:
+    """Download all voice models for a specific language in bulk.
+
+    This command downloads all available voice models for a given language
+    (and optional quality) from the Piper TTS voice catalog. Downloads are
+    performed in parallel for speed.
+
+    The language can be specified via --language option or configured in the
+    config file under voice_management.bulk_download_language. If neither is
+    provided, the command will fail.
+
+    Examples:
+
+        drinkingfountain voices download-bulk --language en_US
+
+        drinkingfountain voices download-bulk --language en_US --quality medium
+
+        drinkingfountain voices download-bulk --language fr_FR --max-workers 5 --stop-on-error
+    """
+    setup_logging(False)  # Use default logging level (INFO)
+    logger = logging.getLogger(__name__)
+
+    config_path = Path(config) if config else None
+
+    try:
+        # Load configuration
+        logger.info("Loading configuration...")
+        config_obj = Config.load(config_path)
+
+        # Determine language: CLI option takes precedence over config
+        bulk_lang = language or config_obj.voice_management.bulk_download_language
+        if not bulk_lang:
+            click.echo(
+                "Error: Language must be specified via --language option or configured in "
+                "config file under 'voice_management.bulk_download_language'.",
+                err=True,
+            )
+            ctx.exit(1)
+
+        # Determine max_workers: CLI option overrides config, default to 3
+        max_workers_val = (
+            max_workers or config_obj.voice_management.max_concurrent_downloads
+        )
+        if max_workers_val < 1:
+            click.echo(
+                f"Error: max_workers must be at least 1, got {max_workers_val}.",
+                err=True,
+            )
+            ctx.exit(1)
+
+        # Determine quality (can be from config if not provided via CLI)
+        # Config has bulk_download_quality, use it if CLI didn't specify
+        quality_val = quality or config_obj.voice_management.bulk_download_quality
+        if quality_val:
+            quality_val = quality_val.lower()
+
+        # Initialize TTS backend
+        logger.info("Initializing TTS backend...")
+        piper = PiperTTSBackend(voices_dir=None, max_text_length=500)
+        tts = CachedTTSBackend(piper)
+
+        if not tts.is_available():
+            click.echo(
+                "Error: Piper TTS is not available. Please install piper-tts:\n"
+                "  pip install piper-tts\n",
+                err=True,
+            )
+            ctx.exit(1)
+
+        # Progress callback to display download progress
+        completed_count = 0
+
+        def progress_callback(completed: int, total: int) -> None:
+            nonlocal completed_count
+            completed_count = completed
+            click.echo(f"Progress: {completed}/{total} voices downloaded...")
+
+        # Perform bulk download
+        click.echo(
+            f"Starting bulk download for language '{bulk_lang}'"
+            f"{f' (quality: {quality_val})' if quality_val else ''}..."
+        )
+        click.echo(f"Max concurrent workers: {max_workers_val}")
+        click.echo(f"Stop on error: {stop_on_error}")
+
+        success_count, failure_count = piper.download_voices_by_language(
+            language=bulk_lang,
+            quality=quality_val,
+            max_workers=max_workers_val,
+            progress_callback=progress_callback,
+            stop_on_error=stop_on_error,
+        )
+
+        # Print summary
+        click.echo()
+        click.echo("Bulk download complete!")
+        click.echo(f"  Successfully downloaded: {success_count} voices")
+        click.echo(f"  Failed: {failure_count} voices")
+
+        if failure_count > 0:
+            logger.warning("Some voice downloads failed. Check logs above for details.")
+
+    except KeyboardInterrupt:
+        click.echo("\nDownload interrupted by user.", err=True)
+        ctx.exit(130)
+    except FileNotFoundError as e:
+        click.echo(f"Error: {e}", err=True)
+        ctx.exit(1)
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        ctx.exit(1)
+    except yaml.YAMLError as e:
+        click.echo(f"Error: Configuration file is invalid YAML: {e}", err=True)
+        ctx.exit(1)
+    except Exception as e:
+        click.echo(f"Unexpected error: {e}", err=True)
+        logger.exception("Unexpected error in voices_download_bulk")
+        ctx.exit(1)
 
 
 def main() -> None:
