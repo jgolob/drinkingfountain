@@ -129,7 +129,6 @@ def render(
     logger = logging.getLogger(__name__)
 
     script_path = Path(script)
-    output_path = Path(output) if output else None
     config_path = Path(config) if config else None
     voices_dir_path = Path(voices_dir) if voices_dir else None
     cache_dir_path = Path(cache_dir) if cache_dir else None
@@ -184,7 +183,7 @@ def render(
             narrator_cfg=config_obj.narrator,
             no_narrator=no_narrator,
         )
-        result = service.render(script_path)
+        result = service.render(script_path, output=output)
 
         # Output user-facing info
         click.echo(f"Script: {result.script_title}")
@@ -192,40 +191,25 @@ def render(
         click.echo(f"  Characters: {result.character_count}")
         click.echo(f"  Dialogue lines: {result.dialogue_count}")
 
-        if output_path:
-            # Export to file
-            output_format = output_path.suffix.lstrip(".").lower()
-            if output_format not in ("wav", "mp3"):
-                click.echo(
-                    f"Error: Unsupported output format '{output_format}'. Use WAV or MP3.",
-                    err=True,
-                )
-                ctx.exit(1)
-
-            parameters = ["-q:a", "0"] if output_format == "mp3" else None
-            result.mixer.export(
-                output_path, format=output_format, parameters=parameters
-            )
-
+        if result.output_path:
+            # File output
             click.echo("\n✓ Render complete!")
-            click.echo(f"  Output: {output_path}")
-            click.echo(
-                f"  Duration: {result.duration:.2f} seconds ({result.duration / 60:.2f} minutes)"
-            )
-            click.echo(f"  Processing time: {result.elapsed:.2f} seconds")
-            click.echo(f"  TTS calls: {result.tts_calls}")
+            click.echo(f"  Output: {result.output_path}")
         else:
-            # Streaming playback
-            click.echo("Playing audio... (press Ctrl+C to stop)")
-            mix = result.mixer.get_mix()
-            _play_mix(mix)
-
+            # Device playback
             click.echo("\n✓ Playback complete!")
-            click.echo(
-                f"  Duration: {result.duration:.2f} seconds ({result.duration / 60:.2f} minutes)"
-            )
-            click.echo(f"  Processing time: {result.elapsed:.2f} seconds")
-            click.echo(f"  TTS calls: {result.tts_calls}")
+
+        # Display timing information
+        click.echo(
+            f"  Duration: {result.duration:.2f} seconds ({result.duration / 60:.2f} minutes)"
+        )
+        click.echo(f"  Time taken: {result.timing.total_wall:.2f} seconds")
+        click.echo(
+            f"  TTS: {result.timing.tts_time:.2f} seconds "
+            f"({result.timing.tts_calls} calls, avg {result.timing.tts_time / result.timing.tts_calls:.2f} s/call)"
+        )
+        click.echo(f"  Output: {result.timing.output_time:.2f} seconds")
+        click.echo(f"  Parse: {result.timing.parse_time:.2f} seconds")
 
     except FileNotFoundError as e:
         click.echo(f"Error: {e}", err=True)

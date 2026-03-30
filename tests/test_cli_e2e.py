@@ -123,8 +123,8 @@ class TestRenderCommandE2E:
             assert "Render complete!" in result.output
             assert "Output:" in result.output
             assert "Duration:" in result.output
-            assert "Processing time:" in result.output
-            assert "TTS calls:" in result.output
+            assert "Time taken:" in result.output
+            assert "TTS:" in result.output and "calls" in result.output
 
             # Verify TTS was called with expected texts
             # With narrator enabled by default, scene heading is also narrated
@@ -300,16 +300,20 @@ voices:
         assert result.exit_code == 2
         assert "does not exist" in result.output or "Invalid value" in result.output
 
-    @patch("drinkingfountain.cli._play_mix")
+    @patch("drinkingfountain.services.StreamingAudioPlayer")
     def test_render_missing_output_option(
         self,
-        mock_play_mix: MagicMock,
+        mock_player_class: MagicMock,
         runner: CliRunner,
         temp_script_file: Path,
         patched_piper,
         mock_tts_instance,
     ):
         """Test render without --output option (should stream audio for playback)."""
+        # Mock StreamingAudioPlayer to avoid real playback
+        mock_player = MagicMock()
+        mock_player_class.return_value = mock_player
+
         result = runner.invoke(cli, ["render", str(temp_script_file)])
 
         # Should succeed and stream audio
@@ -319,8 +323,9 @@ voices:
         )
         # Should show playback complete message
         assert "Playback complete!" in result.output
-        # Verify _play_mix was called
-        mock_play_mix.assert_called_once()
+        # Verify StreamingAudioPlayer was created and finalized
+        mock_player_class.assert_called_once()
+        mock_player.finalize.assert_called_once()
 
     def test_render_tts_not_available(
         self,

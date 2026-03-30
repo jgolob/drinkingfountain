@@ -82,14 +82,14 @@ class TestRenderCommand:
         assert result.exit_code == 2  # Click exits with 2 for missing argument/file
         assert "does not exist" in result.output
 
-    @patch("drinkingfountain.cli._play_mix")
+    @patch("drinkingfountain.services.StreamingAudioPlayer")
     @patch("drinkingfountain.cli.PiperTTSBackend")
     @patch("drinkingfountain.services.FountainParser")
     def test_render_no_output(
         self,
         mock_parser: MagicMock,
         mock_piper: MagicMock,
-        mock_play_mix: MagicMock,
+        mock_player_class: MagicMock,
         runner: CliRunner,
         temp_script: Path,
     ) -> None:
@@ -125,8 +125,9 @@ class TestRenderCommand:
             mock_audio = AudioSegment.silent(duration=1000)
             mock_piper.return_value.generate_audio.return_value = mock_audio
 
-            # Use real AudioMixer (not mocked) with real silent audio
-            # The mixer will be constructed normally and use the mock audio
+            # Mock StreamingAudioPlayer to avoid real playback
+            mock_player = MagicMock()
+            mock_player_class.return_value = mock_player
 
             result = runner.invoke(cli, ["render", str(temp_script)])
 
@@ -135,8 +136,9 @@ class TestRenderCommand:
                 f"Output: {result.output}\nError: {result.exception}"
             )
             assert "Playback complete!" in result.output
-            # _play_mix should be called
-            mock_play_mix.assert_called_once()
+            # StreamingAudioPlayer should be created and finalize called
+            mock_player_class.assert_called_once()
+            mock_player.finalize.assert_called_once()
 
     @patch("drinkingfountain.cli.PiperTTSBackend")
     @patch("drinkingfountain.services.FountainParser")
@@ -205,24 +207,16 @@ class TestRenderCommand:
         mock_audio = AudioSegment.silent(duration=1000)
         mock_piper.return_value.generate_audio.return_value = mock_audio
 
-        # Mock mixer
-        with patch("drinkingfountain.services.AudioMixer") as mock_mixer_class:
-            mock_mixer = MagicMock()
-            mock_mixer.duration.return_value = 5.0
-            mock_mixer_class.return_value = mock_mixer
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "output.wav"
+            result = runner.invoke(cli, ["render", str(temp_script), "-o", str(output)])
 
-            with tempfile.TemporaryDirectory() as tmpdir:
-                output = Path(tmpdir) / "output.wav"
-                result = runner.invoke(
-                    cli, ["render", str(temp_script), "-o", str(output)]
-                )
-
-                # Should succeed
-                assert result.exit_code == 0, (
-                    f"Output: {result.output}\nError: {result.exception}"
-                )
-                assert "Render complete" in result.output
-                assert "Dialogue lines: 3" in result.output
+            # Should succeed
+            assert result.exit_code == 0, (
+                f"Output: {result.output}\nError: {result.exception}"
+            )
+            assert "Render complete" in result.output
+            assert "Dialogue lines: 3" in result.output
 
     def test_render_invalid_config(self, runner: CliRunner, temp_script: Path) -> None:
         """Test render with invalid configuration."""

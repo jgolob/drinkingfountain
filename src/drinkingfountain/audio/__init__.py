@@ -5,6 +5,8 @@ from drinkingfountain.audio.mixer import (
     AudioMixer,
     ChannelMode,
     MixerState,
+    StreamingAudioPlayer,
+    StreamingWAVWriter,
     TimingConfig,
 )
 
@@ -14,4 +16,6 @@ __all__ = [
     "TimingConfig",
     "ChannelMode",
     "MixerState",
+    "StreamingWAVWriter",
+    "StreamingAudioPlayer",
 ]

@@ -4,6 +4,7 @@ This module provides the AudioMixer class which combines audio segments
 with configurable pauses, normalization, and export capabilities.
 """
 
+import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -233,7 +234,11 @@ class AudioMixer:
             self.state.current_position += audio.duration_seconds
 
         # Add post-heading pause
-        pause_duration = pause_after if pause_after is not None else self.timing.pause_after_scene_heading
+        pause_duration = (
+            pause_after
+            if pause_after is not None
+            else self.timing.pause_after_scene_heading
+        )
         pause = AudioSegment.silent(
             duration=int(pause_duration * 1000),
             frame_rate=self.config.sample_rate,
@@ -478,3 +483,233 @@ class AudioMixer:
     def __len__(self) -> int:
         """Return the number of segments added (excluding sound effects)."""
         return len(self.segments)
+
+
+class StreamingWAVWriter:
+    """Stream audio to a WAV file incrementally to reduce memory usage.
+
+    This class writes WAV audio data as it becomes available, maintaining
+    only a running duration count rather than storing all audio in memory.
+
+    The WAV header is written with placeholder values initially, then updated
+    with correct sizes in finalize().
+
+    Example:
+        >>> writer = StreamingWAVWriter(sample_rate=22050, channels=1, sample_width=2)
+        >>> writer.write_audio(audio_segment1)
+        >>> writer.write_audio(audio_segment2)
+        >>> writer.finalize()  # Closes file and updates header
+    """
+
+    def __init__(
+        self, filepath: str | Path, sample_rate: int, channels: int, sample_width: int
+    ) -> None:
+        """Initialize the streaming WAV writer.
+
+        Args:
+            filepath: Output WAV file path.
+            sample_rate: Sample rate in Hz.
+            channels: Number of channels (1 for mono, 2 for stereo).
+            sample_width: Sample width in bytes (typically 2 for 16-bit audio).
+        """
+        self.filepath = Path(filepath)
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.sample_width = sample_width
+        self._total_bytes = 0
+        self._file = None
+
+    def __enter__(self) -> "StreamingWAVWriter":
+        """Context manager entry: open file and write WAV header placeholder."""
+        self._file = open(self.filepath, "wb")
+        self._write_wav_header_placeholder()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Context manager exit: finalize if not already done."""
+        if self._file and not self._file.closed:
+            self.finalize()
+
+    def _write_wav_header_placeholder(self) -> None:
+        """Write a 44-byte WAV header with placeholder sizes."""
+        import struct
+
+        if self._file is None:
+            raise RuntimeError("Writer not opened")
+        # RIFF header
+        self._file.write(b"RIFF")
+        self._file.write(struct.pack("<I", 0))  # Placeholder for file size - 8
+        self._file.write(b"WAVE")
+
+        # fmt chunk
+        self._file.write(b"fmt ")
+        self._file.write(
+            struct.pack(
+                "<IHHIIHH",
+                16,
+                1,
+                self.channels,
+                self.sample_rate,
+                self.sample_rate * self.channels * self.sample_width,
+                self.channels * self.sample_width,
+                self.sample_width * 8,
+            )
+        )
+
+        # data chunk
+        self._file.write(b"data")
+        self._file.write(struct.pack("<I", 0))  # Placeholder for data size
+
+    def write_audio(self, audio: "AudioSegment") -> None:
+        """Write an audio segment to the file.
+
+        Args:
+            audio: AudioSegment to write. Should match the writer's sample rate
+                  and channels (will be converted if needed).
+
+        Raises:
+            ValueError: If audio is not an AudioSegment.
+            RuntimeError: If writer is closed.
+        """
+        from pydub import AudioSegment
+
+        if not isinstance(audio, AudioSegment):
+            raise ValueError(f"Expected AudioSegment, got {type(audio)}")
+
+        if self._file is None or self._file.closed:
+            raise RuntimeError("Writer is closed")
+        assert self._file is not None  # for type checker
+
+        # Ensure audio matches output format
+        if audio.frame_rate != self.sample_rate:
+            audio = audio.set_frame_rate(self.sample_rate)
+        if audio.channels != self.channels:
+            audio = audio.set_channels(self.channels)
+
+        # Write raw audio data
+        self._file.write(audio.raw_data)
+        self._total_bytes += len(audio.raw_data)
+
+    def finalize(self) -> None:
+        """Update WAV header with correct sizes and close the file.
+
+        This method seeks back to fix the placeholder values in the header
+        with the actual file size and data size, then closes the file.
+        """
+        if self._file is None or self._file.closed:
+            return
+        assert self._file is not None  # for type checker
+
+        import struct
+
+        # Calculate sizes
+        file_size = self._total_bytes + 44  # Total file size
+        data_size = self._total_bytes
+
+        # Seek to file size position (byte 4)
+        self._file.seek(4)
+        self._file.write(struct.pack("<I", file_size - 8))
+
+        # Seek to data size position (byte 40)
+        self._file.seek(40)
+        self._file.write(struct.pack("<I", data_size))
+
+        self._file.close()
+        self._file = None
+
+
+class StreamingAudioPlayer:
+    """Stream audio to the audio device incrementally using simpleaudio.
+
+    This class plays audio chunks as they become available, reducing memory
+    usage compared to building the complete mix before playback.
+
+    Playback is synchronous - each write_audio() call blocks until that chunk
+    has finished playing. This avoids overlapping playback and potential
+    concurrency issues.
+
+    Example:
+        >>> player = StreamingAudioPlayer(sample_rate=22050, channels=1, sample_width=2)
+        >>> player.write_audio(audio_segment1)  # Blocks until finished
+        >>> player.write_audio(audio_segment2)  # Blocks until finished
+        >>> player.finalize()  # Cleanup
+    """
+
+    def __init__(self, sample_rate: int, channels: int, sample_width: int) -> None:
+        """Initialize the streaming audio player.
+
+        Args:
+            sample_rate: Sample rate in Hz.
+            channels: Number of channels (1 for mono, 2 for stereo).
+            sample_width: Sample width in bytes (typically 2 for 16-bit audio).
+        """
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.sample_width = sample_width
+        self._simpleaudio = None
+        self._all_played = False
+
+    def _ensure_simpleaudio(self) -> None:
+        """Lazy import simpleaudio and raise helpful error if unavailable."""
+        if self._simpleaudio is not None:
+            return
+        try:
+            import simpleaudio as sa
+
+            self._simpleaudio = sa
+        except ImportError as err:
+            raise ImportError(
+                "Audio playback requires 'simpleaudio'. Install with:\n"
+                "  pip install simpleaudio"
+            ) from err
+
+    def write_audio(self, audio: "AudioSegment") -> None:
+        """Write an audio segment to be played.
+
+        This method blocks until the audio has finished playing.
+
+        Args:
+            audio: AudioSegment to play. Should match the player's sample rate
+                  and channels (will be converted if needed).
+
+        Raises:
+            ValueError: If audio is not an AudioSegment.
+            RuntimeError: If finalize() has already been called.
+        """
+        from pydub import AudioSegment
+
+        if not isinstance(audio, AudioSegment):
+            raise ValueError(f"Expected AudioSegment, got {type(audio)}")
+
+        if self._all_played:
+            raise RuntimeError("Cannot write audio after finalize() has been called")
+
+        self._ensure_simpleaudio()
+        assert self._simpleaudio is not None  # for type checker
+
+        # Ensure audio matches output format
+        if audio.frame_rate != self.sample_rate:
+            audio = audio.set_frame_rate(self.sample_rate)
+        if audio.channels != self.channels:
+            audio = audio.set_channels(self.channels)
+
+        # Play the audio buffer and wait for completion
+        play_obj = self._simpleaudio.play_buffer(
+            audio.raw_data,
+            num_channels=audio.channels,
+            bytes_per_sample=audio.sample_width,
+            sample_rate=audio.frame_rate,
+        )
+        play_obj.wait_done()
+        # Small delay to ensure audio device is ready for next buffer
+        # This prevents issues where only the first scene plays on some systems
+        time.sleep(0.1)
+
+    def finalize(self) -> None:
+        """Finalize the player.
+
+        For StreamingAudioPlayer, all audio is already played by the time
+        write_audio returns, so this is just a marker that no more audio
+        will be written.
+        """
+        self._all_played = True

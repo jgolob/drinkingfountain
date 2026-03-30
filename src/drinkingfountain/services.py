@@ -4,12 +4,17 @@ This module contains service classes that encapsulate core functionality
 for rendering scripts and managing voices, separating them from CLI concerns.
 """
 
+from __future__ import annotations
+
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
+from pydub import AudioSegment
+
 from drinkingfountain.audio import AudioConfig as MixerAudioConfig
-from drinkingfountain.audio import AudioMixer
+from drinkingfountain.audio import AudioMixer, StreamingAudioPlayer, StreamingWAVWriter
 from drinkingfountain.audio import TimingConfig as MixerTimingConfig
 from drinkingfountain.config import Config
 from drinkingfountain.parser.fountain import FountainParser
@@ -21,39 +26,58 @@ from drinkingfountain.voices import VoiceManager
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class TimingMetrics:
+    """Timing metrics for a render operation.
+
+    Attributes:
+        total_wall: Total wall clock time in seconds.
+        parse_time: Time spent parsing the script in seconds.
+        tts_time: Total time spent in TTS synthesis in seconds.
+        tts_calls: Number of TTS synthesis calls made.
+        output_time: Time spent writing to output (file/device) in seconds.
+    """
+
+    total_wall: float
+    parse_time: float
+    tts_time: float
+    tts_calls: int
+    output_time: float
+
+
 class RenderResult:
     """Result of a render operation.
 
     Attributes:
-        mixer: The AudioMixer containing the final audio mix.
         duration: Total duration of the audio in seconds.
         tts_calls: Number of TTS synthesis calls made.
-        elapsed: Total elapsed time in seconds.
         script_title: Title of the script.
         scene_count: Number of scenes in the script.
         character_count: Number of characters in the script.
         dialogue_count: Number of dialogue lines in the script.
+        timing: TimingMetrics object with detailed timing information.
+        output_path: Path to the output file if rendered to file, None if played to device.
     """
 
     def __init__(
         self,
-        mixer: AudioMixer,
         duration: float,
         tts_calls: int,
-        elapsed: float,
         script_title: str,
         scene_count: int,
         character_count: int,
         dialogue_count: int,
+        timing: TimingMetrics,
+        output_path: Path | None = None,
     ) -> None:
-        self.mixer = mixer
         self.duration = duration
         self.tts_calls = tts_calls
-        self.elapsed = elapsed
         self.script_title = script_title
         self.scene_count = scene_count
         self.character_count = character_count
         self.dialogue_count = dialogue_count
+        self.timing = timing
+        self.output_path = output_path
 
 
 class RenderService:
@@ -103,26 +127,35 @@ class RenderService:
             ),
         )
 
-    def render(self, script_path: Path) -> RenderResult:
-        """Render the script to an audio mix.
+    def render(
+        self, script_path: Path, output: str | Path | None = None
+    ) -> RenderResult:
+        """Render the script to audio using streaming.
+
+        Audio is streamed scene-by-scene to reduce memory usage. Each scene
+        is fully rendered in memory, then written to the output and discarded.
 
         Args:
             script_path: Path to the Fountain script file.
+            output: Output file path (str or Path). If None, streams to audio device.
 
         Returns:
-            RenderResult object containing the mixer and statistics.
+            RenderResult object containing statistics and output path.
 
         Raises:
             FileNotFoundError: If the script file doesn't exist.
             ValueError: If the script has no dialogue.
             RuntimeError: If TTS synthesis fails for a required voice.
         """
-        start_time = time.time()
+
+        total_start = time.perf_counter()
 
         # Parse script
+        parse_start = time.perf_counter()
         logger.info("Parsing script: %s", script_path)
         parser = FountainParser()
         script_obj = parser.parse(script_path)
+        parse_time = time.perf_counter() - parse_start
 
         # Log script info
         logger.info("Script: %s", script_obj.title or "Untitled")
@@ -157,7 +190,7 @@ class RenderService:
             for char in characters_without_voices[:5]:
                 logger.warning("  - %s", char)
             if len(characters_without_voices) > 5:
-                logger.warning("  ... and %d more", len(characters_without_voices) - 5)
+                logger.warning("... and %d more", len(characters_without_voices) - 5)
 
         # Determine narrator voice if narrator is enabled
         narrator_voice = None
@@ -181,94 +214,220 @@ class RenderService:
                 else:
                     narrator_voice = available_voices[0]
 
+        # Prepare streaming output
+        sample_rate = self.config.audio.sample_rate
+        channels = 1 if self.config.audio.channels == "mono" else 2
+        sample_width = 2  # 16-bit audio
+
+        if output:
+            output_path = Path(output)
+            logger.info("Streaming to file: %s", output_path)
+            writer = StreamingWAVWriter(
+                filepath=output_path,
+                sample_rate=sample_rate,
+                channels=channels,
+                sample_width=sample_width,
+            )
+            writer.__enter__()  # Manually enter context
+        else:
+            output_path = None
+            logger.info("Streaming to audio device")
+            writer = StreamingAudioPlayer(
+                sample_rate=sample_rate,
+                channels=channels,
+                sample_width=sample_width,
+            )
+
         tts_calls = 0
+        tts_time = 0.0
+        total_audio_duration = 0.0
+        output_start = time.perf_counter()
 
-        # Process all scenes and blocks in order
-        for scene in script_obj.scenes:
-            # Process scene heading
-            heading = scene.heading
-            if self.narrator_cfg.enabled:
-                # narrator_voice is guaranteed to be set if narrator is enabled
-                assert narrator_voice is not None, (
-                    "Narrator voice should be determined before rendering"
+        try:
+            # Process all scenes and blocks in order
+            for scene_idx, scene in enumerate(script_obj.scenes, 1):
+                logger.info("Rendering scene %d...", scene_idx)
+
+                # Create a fresh mixer for this scene
+                mixer = AudioMixer(
+                    config=MixerAudioConfig(
+                        sample_rate=self.config.audio.sample_rate,
+                        channels=self.config.audio.channels,
+                        normalize=False,  # We'll normalize at the end if needed
+                        target_level=self.config.audio.target_level,
+                    ),
+                    timing=MixerTimingConfig(
+                        pause_between_lines=self.config.timing.pause_between_lines,
+                        pause_after_scene_heading=self.config.timing.pause_after_scene_heading,
+                        pause_between_scenes=self.config.timing.pause_between_scenes,
+                    ),
                 )
-                try:
-                    heading_text = transform_scene_heading(
-                        heading.content, self.narrator_cfg.expand_int_ext
-                    )
-                    audio = self.tts.generate_audio(heading_text, narrator_voice)
-                    tts_calls += 1
-                    self.mixer.add_scene_heading(
-                        heading,
-                        audio,
-                        pause_after=self.narrator_cfg.pause_after_heading,
-                    )
-                except (FileNotFoundError, RuntimeError) as e:
-                    logger.warning(
-                        "Narrator TTS error for scene heading: %s. Disabling narrator for the remainder of the script.",
-                        e,
-                    )
-                    self.narrator_cfg.enabled = False
-                    self.mixer.add_scene_heading(heading)
-            else:
-                self.mixer.add_scene_heading(heading)
 
-            # Process blocks within the scene
-            for block in scene.blocks:
-                # Dialogue
-                if isinstance(block, Dialogue):
-                    voice = self.voice_mgr.get_voice_for_character(block.character)
-                    try:
-                        audio = self.tts.generate_audio(block.content, voice)
-                        tts_calls += 1
-                    except FileNotFoundError as e:
-                        raise FileNotFoundError(
-                            f"Voice model not found for voice '{voice}'. "
-                            f"Use 'drinkingfountain voices download {voice}' to download it."
-                        ) from e
-                    except RuntimeError as e:
-                        raise RuntimeError(
-                            f"TTS synthesis failed for dialogue: {e}"
-                        ) from e
-                    self.mixer.add_dialogue(block, audio)
-
-                # Action (stage directions) with narrator
-                elif isinstance(block, Action) and self.narrator_cfg.enabled:
+                # Process scene heading
+                heading = scene.heading
+                if self.narrator_cfg.enabled:
                     # narrator_voice is guaranteed to be set if narrator is enabled
                     assert narrator_voice is not None, (
                         "Narrator voice should be determined before rendering"
                     )
                     try:
-                        audio = self.tts.generate_audio(block.content, narrator_voice)
+                        heading_text = transform_scene_heading(
+                            heading.content, self.narrator_cfg.expand_int_ext
+                        )
+                        tts_start = time.perf_counter()
+                        audio = self.tts.generate_audio(heading_text, narrator_voice)
+                        tts_time += time.perf_counter() - tts_start
                         tts_calls += 1
+                        # Determine pause after heading (use narrator setting or fall back to timing config)
+                        pause_after_heading = (
+                            self.narrator_cfg.pause_after_heading
+                            if self.narrator_cfg.pause_after_heading is not None
+                            else self.config.timing.pause_after_scene_heading
+                        )
+                        mixer.add_scene_heading(
+                            heading,
+                            audio,
+                            pause_after=pause_after_heading,
+                        )
                     except (FileNotFoundError, RuntimeError) as e:
                         logger.warning(
-                            "Narrator TTS error for action block: %s. Disabling narrator for the remainder of the script.",
+                            "Narrator TTS error for scene heading: %s. Disabling narrator for the remainder of the script.",
                             e,
                         )
                         self.narrator_cfg.enabled = False
-                        continue
-                    self.mixer.add_narrative(
-                        block,
-                        audio,
-                        pause_before=self.narrator_cfg.pause_before_narrative,
-                        pause_after=self.narrator_cfg.pause_after_narrative,
-                    )
-                # Other block types (Parenthetical, Transition, etc.) are skipped
+                        mixer.add_scene_heading(heading)  # Just heading, no audio
+                else:
+                    mixer.add_scene_heading(heading)  # Just heading, no audio
 
-        elapsed = time.time() - start_time
-        duration = self.mixer.duration()
+                # Process blocks within the scene
+                for block in scene.blocks:
+                    # Dialogue
+                    if isinstance(block, Dialogue):
+                        voice = self.voice_mgr.get_voice_for_character(block.character)
+                        try:
+                            tts_start = time.perf_counter()
+                            audio = self.tts.generate_audio(block.content, voice)
+                            tts_time += time.perf_counter() - tts_start
+                            tts_calls += 1
+                        except FileNotFoundError as e:
+                            raise FileNotFoundError(
+                                f"Voice model not found for voice '{voice}'. "
+                                f"Use 'drinkingfountain voices download {voice}' to download it."
+                            ) from e
+                        except RuntimeError as e:
+                            raise RuntimeError(
+                                f"TTS synthesis failed for dialogue: {e}"
+                            ) from e
+                        mixer.add_dialogue(block, audio)
+
+                    # Action (stage directions) with narrator
+                    elif isinstance(block, Action) and self.narrator_cfg.enabled:
+                        assert narrator_voice is not None, (
+                            "Narrator voice should be determined before rendering"
+                        )
+                        try:
+                            tts_start = time.perf_counter()
+                            audio = self.tts.generate_audio(
+                                block.content, narrator_voice
+                            )
+                            tts_time += time.perf_counter() - tts_start
+                            tts_calls += 1
+                        except (FileNotFoundError, RuntimeError) as e:
+                            logger.warning(
+                                "Narrator TTS error for action block: %s. Disabling narrator for the remainder of the script.",
+                                e,
+                            )
+                            self.narrator_cfg.enabled = False
+                            continue
+                        mixer.add_narrative(
+                            block,
+                            audio,
+                            pause_before=self.narrator_cfg.pause_before_narrative,
+                            pause_after=self.narrator_cfg.pause_after_narrative,
+                        )
+                    # Other block types are skipped
+
+                # Get the mixed audio for this scene
+                scene_audio = mixer.get_mix()
+                scene_duration = len(scene_audio) / 1000.0  # pydub length in ms
+
+                # Write scene audio to output
+                writer.write_audio(scene_audio)
+                total_audio_duration += scene_duration
+
+                # Add scene transition pause (silence) after this scene if not the last
+                if scene_idx < len(script_obj.scenes):
+                    pause_between = self.config.timing.pause_between_scenes
+                    self._add_silence(writer, pause_between)
+                    total_audio_duration += pause_between
+
+            output_time = time.perf_counter() - output_start
+
+            # Finalize writer/player
+            if output:
+                writer.finalize()
+            else:
+                writer.finalize()  # This waits for playback to complete
+
+        except Exception:
+            # Ensure writer is cleaned up on error
+            if output and hasattr(writer, "_file"):
+                f = writer._file
+                assert f is not None, "writer._file should not be None here"
+                if not f.closed:  # type: ignore
+                    f.close()  # type: ignore
+            raise
+
+        total_wall = time.perf_counter() - total_start
+
+        # Build timing metrics
+        timing = TimingMetrics(
+            total_wall=total_wall,
+            parse_time=parse_time,
+            tts_time=tts_time,
+            tts_calls=tts_calls,
+            output_time=output_time,
+        )
 
         return RenderResult(
-            mixer=self.mixer,
-            duration=duration,
+            duration=total_audio_duration,
             tts_calls=tts_calls,
-            elapsed=elapsed,
             script_title=script_obj.title or "Untitled",
             scene_count=len(script_obj.scenes),
             character_count=len(script_obj.characters),
             dialogue_count=dialogue_count,
+            timing=timing,
+            output_path=output_path,
         )
+
+    def _add_silence(
+        self, writer: StreamingWAVWriter | StreamingAudioPlayer, duration: float
+    ) -> None:
+        """Add silence (silent audio segment) to the stream."""
+        from pydub import AudioSegment
+
+        if duration <= 0:
+            return
+        silence = AudioSegment.silent(
+            duration=int(duration * 1000),
+            frame_rate=self.config.audio.sample_rate,
+        )
+        if self.config.audio.channels == "mono":
+            silence = silence.set_channels(1)
+        else:
+            silence = silence.set_channels(2)
+        writer.write_audio(silence)
+
+    def _add_audio_with_pause(
+        self,
+        writer: StreamingWAVWriter | StreamingAudioPlayer,
+        audio: AudioSegment,
+        pause_duration: float,
+    ) -> None:
+        """Add a pause followed by audio to the stream."""
+        if pause_duration > 0:
+            self._add_silence(writer, pause_duration)
+        writer.write_audio(audio)
 
 
 class VoiceService:
