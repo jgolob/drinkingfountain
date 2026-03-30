@@ -20,7 +20,35 @@ DrinkingFountain is a command-line tool that transforms Fountain screenplay file
 
 ## Installation
 
-### Prerequisites
+### Quick Install (Recommended)
+
+We provide automated installers for a hassle-free setup:
+
+**macOS / Linux:**
+```bash
+bash install.sh
+```
+
+**Windows (PowerShell):**
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+The installer will:
+- ✓ Check Python version (requires 3.10+)
+- ✓ Set up a virtual environment (optional but recommended)
+- ✓ Install all dependencies
+- ✓ Check for and help install ffmpeg (for MP3 export)
+- ✓ Install simpleaudio (for direct playback)
+- ✓ Download a default voice model
+- ✓ Create a sample configuration file
+- ✓ Verify the installation
+
+### Manual Installation
+
+If you prefer to install manually or the automated installer doesn't work for your system:
+
+#### Prerequisites
 
 - **Python**: 3.10 or newer
 - **Package manager**: `uv` (recommended) or `pip`
@@ -33,7 +61,7 @@ DrinkingFountain is a command-line tool that transforms Fountain screenplay file
 - **Linux**: `sudo apt-get install ffmpeg` (Debian/Ubuntu) or `sudo dnf install ffmpeg` (Fedora)
 - **Windows**: Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add to PATH
 
-### Install DrinkingFountain
+#### Install DrinkingFountain
 
 Using **uv** (recommended):
 ```bash
@@ -45,7 +73,7 @@ Using **pip**:
 pip install -e .
 ```
 
-### Download Voice Models
+#### Download Voice Models
 
 At least one voice model is required. Download your first voice:
 
@@ -54,6 +82,8 @@ drinkingfountain voices download en_US-amy-medium
 ```
 
 See [Voice Models](#voice-models) for more options.
+
+For detailed installation instructions, troubleshooting, and uninstallation, see [INSTALL.md](INSTALL.md).
 
 ---
 
