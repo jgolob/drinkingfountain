@@ -13,6 +13,8 @@ document.addEventListener('DOMContentLoaded', function () {
     const narratorVoiceSelect = document.getElementById('narrator-voice-select');
     const voiceOverrides = document.getElementById('voice-overrides');
     const addVoiceOverrideBtn = document.getElementById('add-voice-override');
+    const scriptInput = document.getElementById('script');
+    const scriptFileInput = document.getElementById('script_file');
 
     let availableVoices = [];
     let overrideCount = 0;
@@ -31,23 +33,40 @@ document.addEventListener('DOMContentLoaded', function () {
         })
         .catch(() => {});
 
+    scriptFileInput.addEventListener('change', function () {
+        errorDisplay.classList.add('d-none');
+        const file = scriptFileInput.files && scriptFileInput.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function () {
+            scriptInput.value = String(reader.result || '');
+        };
+        reader.onerror = function () {
+            errorDisplay.textContent = 'Could not read the selected script file.';
+            errorDisplay.classList.remove('d-none');
+            scriptFileInput.value = '';
+        };
+        reader.readAsText(file);
+    });
+
     // Voice override management
     addVoiceOverrideBtn.addEventListener('click', function () {
         overrideCount++;
         const row = document.createElement('div');
-        row.className = 'row g-2 mb-2 voice-override-row';
+        row.className = 'voice-override-row';
         row.innerHTML =
-            '<div class="col-5">' +
-            '<input type="text" class="form-control form-control-sm" name="voice_char_' + overrideCount + '" placeholder="Character name">' +
+            '<div>' +
+            '<input type="text" class="form-control" name="voice_char_' + overrideCount + '" placeholder="Character name">' +
             '</div>' +
-            '<div class="col-5">' +
-            '<select class="form-select form-select-sm" name="voice_id_' + overrideCount + '">' +
+            '<div>' +
+            '<select class="form-select" name="voice_id_' + overrideCount + '">' +
             '<option value="">Select voice...</option>' +
             availableVoices.map(function (v) { return '<option value="' + v + '">' + v + '</option>'; }).join('') +
             '</select>' +
             '</div>' +
-            '<div class="col-2">' +
-            '<button type="button" class="btn btn-sm btn-outline-danger remove-override">X</button>' +
+            '<div>' +
+            '<button type="button" class="btn btn-outline-danger remove-override">Remove</button>' +
             '</div>';
         voiceOverrides.appendChild(row);
         row.querySelector('.remove-override').addEventListener('click', function () {

@@ -1,5 +1,6 @@
 """Tests for the Flask web interface."""
 
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -147,6 +148,76 @@ def test_render_endpoint_returns_urls(
     assert payload["status"] == "complete"
     assert payload["audio_url"].startswith("/audio/")
     assert payload["timing_url"].startswith("/timing/")
+
+
+def test_render_endpoint_uses_uploaded_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    app = create_app()
+    app.config["TESTING"] = True
+    captured: dict[str, str] = {}
+
+    class FakeRenderService:
+        def __init__(
+            self,
+            config: object,
+            tts: object,
+            voice_mgr: object,
+            narrator_cfg: object,
+        ) -> None:
+            pass
+
+        def render_from_string(
+            self,
+            script_text: str,
+            output: str,
+            collect_timing: bool,
+        ) -> RenderResult:
+            captured["script_text"] = script_text
+            Path(output).write_bytes(b"RIFF")
+            return RenderResult(
+                duration=0.5,
+                tts_calls=1,
+                script_title="Uploaded",
+                scene_count=1,
+                character_count=1,
+                dialogue_count=1,
+                timing=TimingMetrics(
+                    total_wall=0.1,
+                    parse_time=0.01,
+                    tts_time=0.02,
+                    tts_calls=1,
+                    output_time=0.03,
+                ),
+                output_path=Path(output),
+                timing_blocks=[],
+            )
+
+    monkeypatch.setattr("drinkingfountain.web.app.PiperTTSBackend", FakeTTSBackend)
+    monkeypatch.setattr(
+        "drinkingfountain.web.app.CachedTTSBackend", lambda piper: piper
+    )
+    monkeypatch.setattr("drinkingfountain.web.app.RenderService", FakeRenderService)
+    monkeypatch.setattr(
+        "drinkingfountain.web.app.tempfile.NamedTemporaryFile",
+        lambda delete, suffix, prefix: _TempFile(tmp_path / f"{prefix}upload{suffix}"),
+    )
+
+    uploaded_script = "INT. UPLOAD - DAY\n\nMARY\nFrom the uploaded file."
+    response = app.test_client().post(
+        "/render",
+        data={
+            "script": "",
+            "script_file": (
+                BytesIO(uploaded_script.encode("utf-8")),
+                "uploaded.fountain",
+            ),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200
+    assert captured["script_text"] == uploaded_script
 
 
 def test_render_endpoint_removes_temp_file_when_no_voices(
