@@ -14,6 +14,7 @@ DrinkingFountain is a command-line tool that transforms Fountain screenplay file
 - **Voice Management**: List, download, and test voice models from HuggingFace
 - **Smart Chunking**: Automatic handling of long dialogue lines
 - **Multiple Output Formats**: Export to WAV or MP3 (requires ffmpeg)
+- **Web UI**: Paste or upload scripts, render in the browser, and follow synchronized playback
 - **Direct Playback**: Play audio directly through the system's default audio device (requires simpleaudio)
 
 ---
@@ -118,6 +119,14 @@ drinkingfountain render script.fountain -o output.wav
 ```bash
 drinkingfountain render script.fountain
 ```
+
+**Option C: Use the web UI**:
+
+```bash
+drinkingfountain-web
+```
+
+Then open [http://127.0.0.1:5000](http://127.0.0.1:5000), paste or upload your Fountain script, and click **Render Audio**.
 
 That's it! For more control, read on.
 
@@ -298,6 +307,116 @@ All new voice management features are fully backward compatible:
 - Bulk download is an optional CLI command, not required for normal operation
 
 You can adopt these features gradually without disrupting your existing workflow.
+
+---
+
+## Web UI
+
+DrinkingFountain includes a local Flask web interface for users who prefer working in a browser. It uses the same parser, voice assignment, TTS cache, narrator behavior, and audio renderer as the CLI.
+
+The web UI is intended for local use on your own machine. It starts a development server bound to `127.0.0.1`, so other machines on your network cannot access it by default.
+
+### Prerequisites
+
+Before launching the web UI, make sure the project is installed and at least one Piper voice is available:
+
+```bash
+drinkingfountain voices list
+```
+
+If no voices are installed, download one:
+
+```bash
+drinkingfountain voices download en_US-amy-medium
+```
+
+For better character variety, download several voices:
+
+```bash
+drinkingfountain voices download-bulk --language en_US --quality medium
+```
+
+MP3 output also requires `ffmpeg`. WAV output works without `ffmpeg`.
+
+### Launching the Web UI
+
+From the project environment or after installation, run:
+
+```bash
+drinkingfountain-web
+```
+
+You can also launch it as a module:
+
+```bash
+python -m drinkingfountain.web
+```
+
+The server prints a local URL:
+
+```text
+Running on http://127.0.0.1:5000
+```
+
+Open that URL in your browser. Stop the server with `Ctrl+C` in the terminal.
+
+### Rendering a Script
+
+1. Paste Fountain text into the **Fountain Script** field, or choose a `.fountain` or `.txt` file with the upload control.
+2. Optional: open **Audio Settings** and choose sample rate, channel mode, and output format.
+3. Optional: open **Timing** and adjust pauses between lines, after scene headings, and between scenes.
+4. Optional: open **Narrator** to enable or disable narrated scene headings/action, expand `INT./EXT.`, or choose a narrator voice.
+5. Optional: open **Character Voice Overrides** to map a character name to a specific installed voice.
+6. Click **Render Audio**.
+
+When rendering finishes, the page shows an audio player and a synchronized script view. The currently playing script block is highlighted as audio plays. Click any rendered script block to seek to that point in the audio.
+
+### Web UI Settings
+
+Most form settings mirror the YAML configuration:
+
+- **Sample Rate**: `22050` or `44100` Hz. `22050` is usually best for Piper voices.
+- **Channels**: `mono` or `stereo`. Mono is recommended for voice-only renders.
+- **Output Format**: `wav` or `mp3`. MP3 requires `ffmpeg`.
+- **Timing**: pause values are seconds and may be fractional, such as `0.25`.
+- **Narrator Voice**: leave blank for automatic selection, or choose an installed voice.
+- **Voice Overrides**: character names must match the Fountain script names exactly, including capitalization.
+
+The web UI uses the shared TTS cache at `~/.cache/drinkingfountain/tts`, so repeated renders of the same lines and voices are faster.
+
+### Render Results and Expiration
+
+Rendered files are stored in temporary files and served through local URLs such as `/audio/<render_id>` and `/timing/<render_id>`. Results expire automatically after about 30 minutes or when the local render store is full. Save any audio you want to keep before closing the browser or stopping the server.
+
+### Web UI Troubleshooting
+
+#### The page says no voice models are installed
+
+Download at least one voice:
+
+```bash
+drinkingfountain voices download en_US-amy-medium
+```
+
+Then refresh the web page.
+
+#### MP3 rendering fails
+
+Install `ffmpeg`, or choose WAV in **Audio Settings**.
+
+#### Rendering takes a long time
+
+Long scripts can take minutes because TTS synthesis is CPU-bound. Repeated renders are faster when cached audio can be reused. For first tests, try a short scene before rendering a full screenplay.
+
+#### The voice dropdown is empty
+
+Check that voices are installed and visible to DrinkingFountain:
+
+```bash
+drinkingfountain voices list
+```
+
+If you use a custom voice directory in CLI commands, note that the current web UI uses Piper's default voice location.
 
 ---
 
@@ -652,8 +771,8 @@ Or disable normalization and adjust manually in post.
 
 - **Prosody from parentheticals**: Parenthetical cues like `(whispering)` or `(shouting)` are parsed but not yet applied to TTS output. This is planned for a future release.
 - **Dual dialogue**: Simultaneous dialogue (two characters speaking at once using `^` notation) is not supported. Lines are processed sequentially.
-- **Non-dialogue speech**: Action lines, transitions, and other non-dialogue elements are not synthesized. Only scene headings (if configured) and dialogue are included in the audio output.
-- **GUI**: DrinkingFountain is CLI-only. No graphical interface is currently planned, but the CLI is designed to be scriptable.
+- **Non-dialogue speech**: Action lines can be narrated when the narrator is enabled. Transitions and other non-dialogue elements are not synthesized.
+- **Web UI scope**: The web UI is a local single-user interface. It does not provide accounts, background render queues, saved projects, or network sharing.
 
 ### Platform-Specific Notes
 
@@ -722,6 +841,10 @@ drinkingfountain/
 │   ├── utils/
 │   │   ├── text_chunker.py # Long text splitting
 │   │   └── __init__.py
+│   ├── web/
+│   │   ├── app.py          # Flask routes and render store
+│   │   ├── templates/      # Browser UI templates
+│   │   └── static/         # Web UI CSS and JavaScript
 │   └── voices/
 │       ├── manager.py      # Voice assignment logic
 │       └── __init__.py
@@ -739,6 +862,7 @@ drinkingfountain/
 4. **VoiceManager** (`voices/manager.py`): Maps characters to voice IDs
 5. **TTS Backend** (`tts/piper.py`): Generates audio via Piper, handles chunking
 6. **AudioMixer** (`audio/mixer.py`): Combines segments, adds pauses, normalizes, exports
+7. **Web UI** (`web/app.py`): Wraps the same services in local Flask routes and browser playback
 
 ### Adding New TTS Backends
 
