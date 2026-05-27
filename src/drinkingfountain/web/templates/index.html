@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DrinkingFountain</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+          rel="stylesheet"
+          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YcnS/1tyQOi6CCGY5w8Rp+oBjBpHKDB5mVj"
+          crossorigin="anonymous">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark mb-4">
+        <div class="container">
+            <span class="navbar-brand">DrinkingFountain</span>
+            <span class="navbar-text text-muted">Fountain Script &rarr; Audio Play</span>
+        </div>
+    </nav>
+
+    <div class="container" id="app">
+        <!-- Input Section -->
+        <div id="input-section">
+            <form id="render-form">
+                <div class="mb-3">
+                    <label for="script" class="form-label fw-bold">Fountain Script</label>
+                    <textarea class="form-control font-monospace" id="script" name="script"
+                              rows="12" placeholder="Paste your Fountain script here..."></textarea>
+                </div>
+                <div class="mb-3">
+                    <label for="script_file" class="form-label">Or upload a .fountain file</label>
+                    <input class="form-control" type="file" id="script_file" name="script_file" accept=".fountain,.txt">
+                </div>
+
+                <!-- Config accordion -->
+                <div class="accordion mb-3" id="config-accordion">
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button collapsed" type="button"
+                                    data-bs-toggle="collapse" data-bs-target="#config-audio">
+                                Audio Settings
+                            </button>
+                        </h2>
+                        <div id="config-audio" class="accordion-collapse collapse">
+                            <div class="accordion-body">
+                                <div class="row g-3">
+                                    <div class="col-md-4">
+                                        <label class="form-label">Sample Rate</label>
+                                        <select class="form-select" name="sample_rate">
+                                            <option value="22050" selected>22050 Hz</option>
+                                            <option value="44100">44100 Hz</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Channels</label>
+                                        <select class="form-select" name="channels">
+                                            <option value="mono" selected>Mono</option>
+                                            <option value="stereo">Stereo</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Output Format</label>
+                                        <select class="form-select" name="output_format">
+                                            <option value="wav" selected>WAV</option>
+                                            <option value="mp3">MP3</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button collapsed" type="button"
+                                    data-bs-toggle="collapse" data-bs-target="#config-timing">
+                                Timing
+                            </button>
+                        </h2>
+                        <div id="config-timing" class="accordion-collapse collapse">
+                            <div class="accordion-body">
+                                <div class="row g-3">
+                                    <div class="col-md-4">
+                                        <label class="form-label">Pause Between Lines (s)</label>
+                                        <input type="number" class="form-control" name="pause_between_lines"
+                                               value="0.3" step="0.1" min="0">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Pause After Scene Heading (s)</label>
+                                        <input type="number" class="form-control" name="pause_after_scene_heading"
+                                               value="1.0" step="0.1" min="0">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Pause Between Scenes (s)</label>
+                                        <input type="number" class="form-control" name="pause_between_scenes"
+                                               value="2.0" step="0.1" min="0">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button collapsed" type="button"
+                                    data-bs-toggle="collapse" data-bs-target="#config-narrator">
+                                Narrator
+                            </button>
+                        </h2>
+                        <div id="config-narrator" class="accordion-collapse collapse">
+                            <div class="accordion-body">
+                                <div class="form-check mb-3">
+                                    <input class="form-check-input" type="checkbox" name="narrator_enabled"
+                                           id="narrator_enabled" checked>
+                                    <label class="form-check-label" for="narrator_enabled">Enable Narrator</label>
+                                </div>
+                                <div class="form-check mb-3">
+                                    <input class="form-check-input" type="checkbox" name="expand_int_ext"
+                                           id="expand_int_ext" checked>
+                                    <label class="form-check-label" for="expand_int_ext">Expand INT/EXT</label>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Narrator Voice</label>
+                                    <select class="form-select" name="narrator_voice" id="narrator-voice-select">
+                                        <option value="">Auto-select</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button collapsed" type="button"
+                                    data-bs-toggle="collapse" data-bs-target="#config-voices">
+                                Character Voice Overrides
+                            </button>
+                        </h2>
+                        <div id="config-voices" class="accordion-collapse collapse">
+                            <div class="accordion-body">
+                                <div id="voice-overrides"></div>
+                                <button type="button" class="btn btn-sm btn-outline-secondary mt-2"
+                                        id="add-voice-override">+ Add Override</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="d-flex gap-2">
+                    <button type="submit" class="btn btn-primary" id="render-btn">
+                        <span id="render-btn-text">Render Audio</span>
+                        <span id="render-spinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary d-none" id="new-render-btn">
+                        New Render
+                    </button>
+                </div>
+            </form>
+
+            <div id="error-display" class="alert alert-danger mt-3 d-none"></div>
+        </div>
+
+        <!-- Results Section -->
+        <div id="results-section" class="d-none mt-4">
+            <h5 id="result-title" class="mb-3"></h5>
+            <div id="script-display"></div>
+        </div>
+    </div>
+
+    <!-- Sticky audio player -->
+    <div id="audio-player-bar" class="d-none">
+        <div class="container">
+            <audio id="audio-player" controls></audio>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+            integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
+            crossorigin="anonymous"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

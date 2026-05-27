@@ -57,6 +57,27 @@ Hi, John.
     assert script.characters == {"JOHN", "MARY"}
 
 
+def test_parse_string_resets_line_numbers(parser: FountainParser) -> None:
+    """Test that parse_string can safely reuse a parser instance."""
+    first = parser.parse_string(
+        """INT. ROOM - DAY
+
+JOHN
+Hello.
+"""
+    )
+    second = parser.parse_string(
+        """EXT. STREET - NIGHT
+
+MARY
+Hi.
+"""
+    )
+
+    assert first.scenes[0].heading.line_number == 1
+    assert second.scenes[0].heading.line_number == 1
+
+
 def test_parse_with_parentheticals(parser: FountainParser, tmp_path: Path) -> None:
     """Test parsing dialogue with parentheticals."""
     script_file = tmp_path / "test.fountain"

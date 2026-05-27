@@ -19,7 +19,7 @@ from drinkingfountain.audio import AudioMixer, StreamingAudioPlayer, StreamingWA
 from drinkingfountain.audio import TimingConfig as MixerTimingConfig
 from drinkingfountain.config import Config
 from drinkingfountain.parser.fountain import FountainParser
-from drinkingfountain.parser.script import Action, Dialogue
+from drinkingfountain.parser.script import Action, Dialogue, Script
 from drinkingfountain.tts import CachedTTSBackend
 from drinkingfountain.utils.narrator import transform_scene_heading
 from drinkingfountain.voices import VoiceManager
@@ -46,6 +46,20 @@ class TimingMetrics:
     output_time: float
 
 
+@dataclass
+class TimingBlock:
+    """A block of content with its position in the audio timeline.
+
+    Used for synchronized playback in the web UI.
+    """
+
+    type: str
+    text: str
+    character: str | None = None
+    start: float = 0.0
+    end: float = 0.0
+
+
 class RenderResult:
     """Result of a render operation.
 
@@ -58,6 +72,7 @@ class RenderResult:
         dialogue_count: Number of dialogue lines in the script.
         timing: TimingMetrics object with detailed timing information.
         output_path: Path to the output file if rendered to file, None if played to device.
+        timing_blocks: List of TimingBlock objects for synchronized playback, or None.
     """
 
     def __init__(
@@ -70,6 +85,7 @@ class RenderResult:
         dialogue_count: int,
         timing: TimingMetrics,
         output_path: Path | None = None,
+        timing_blocks: list[TimingBlock] | None = None,
     ) -> None:
         self.duration = duration
         self.tts_calls = tts_calls
@@ -79,6 +95,7 @@ class RenderResult:
         self.dialogue_count = dialogue_count
         self.timing = timing
         self.output_path = output_path
+        self.timing_blocks = timing_blocks
 
 
 class RenderService:
@@ -129,16 +146,17 @@ class RenderService:
         )
 
     def render(
-        self, script_path: Path, output: str | Path | None = None
+        self,
+        script_path: Path,
+        output: str | Path | None = None,
+        collect_timing: bool = False,
     ) -> RenderResult:
         """Render the script to audio using streaming.
-
-        Audio is streamed scene-by-scene to reduce memory usage. Each scene
-        is fully rendered in memory, then written to the output and discarded.
 
         Args:
             script_path: Path to the Fountain script file.
             output: Output file path (str or Path). If None, streams to audio device.
+            collect_timing: If True, collect per-block timing data for synchronized playback.
 
         Returns:
             RenderResult object containing statistics and output path.
@@ -148,15 +166,59 @@ class RenderService:
             ValueError: If the script has no dialogue.
             RuntimeError: If TTS synthesis fails for a required voice.
         """
-
         total_start = time.perf_counter()
-
-        # Parse script
         parse_start = time.perf_counter()
         logger.info("Parsing script: %s", script_path)
         parser = FountainParser()
         script_obj = parser.parse(script_path)
         parse_time = time.perf_counter() - parse_start
+
+        return self._render_script(
+            script_obj, output, collect_timing, total_start, parse_time
+        )
+
+    def render_from_string(
+        self,
+        script_text: str,
+        output: str | Path | None = None,
+        collect_timing: bool = False,
+        title: str | None = None,
+    ) -> RenderResult:
+        """Render a Fountain script from a string.
+
+        Args:
+            script_text: Fountain-format screenplay text.
+            output: Output file path (str or Path). If None, streams to audio device.
+            collect_timing: If True, collect per-block timing data for synchronized playback.
+            title: Optional title for the script.
+
+        Returns:
+            RenderResult object containing statistics and output path.
+
+        Raises:
+            ValueError: If the script has no dialogue.
+            RuntimeError: If TTS synthesis fails for a required voice.
+        """
+        total_start = time.perf_counter()
+        parse_start = time.perf_counter()
+        logger.info("Parsing script from string")
+        parser = FountainParser()
+        script_obj = parser.parse_string(script_text, title=title)
+        parse_time = time.perf_counter() - parse_start
+
+        return self._render_script(
+            script_obj, output, collect_timing, total_start, parse_time
+        )
+
+    def _render_script(
+        self,
+        script_obj: Script,
+        output: str | Path | None,
+        collect_timing: bool,
+        total_start: float,
+        parse_time: float,
+    ) -> RenderResult:
+        """Core render logic shared by render() and render_from_string()."""
 
         # Reset voice manager for this render
         self.voice_mgr.start_render()
@@ -302,6 +364,10 @@ class RenderService:
         total_audio_duration = 0.0
         output_start = time.perf_counter()
 
+        # Timing collection
+        timing_blocks: list[TimingBlock] | None = [] if collect_timing else None
+        cumulative_offset = 0.0
+
         try:
             # Process all scenes and blocks in order
             for scene_idx, scene in enumerate(script_obj.scenes, 1):
@@ -333,6 +399,7 @@ class RenderService:
                         heading_text = transform_scene_heading(
                             heading.content, self.narrator_cfg.expand_int_ext
                         )
+                        block_start = cumulative_offset + mixer.state.current_position
                         tts_start = time.perf_counter()
                         audio = self.tts.generate_audio(heading_text, narrator_voice)
                         tts_time += time.perf_counter() - tts_start
@@ -348,6 +415,16 @@ class RenderService:
                             audio,
                             pause_after=pause_after_heading,
                         )
+                        if timing_blocks is not None:
+                            timing_blocks.append(
+                                TimingBlock(
+                                    type="scene_heading",
+                                    text=heading.content,
+                                    start=block_start,
+                                    end=cumulative_offset
+                                    + mixer.state.current_position,
+                                )
+                            )
                     except (FileNotFoundError, RuntimeError) as e:
                         logger.warning(
                             "Narrator TTS error for scene heading: %s. Disabling narrator for the remainder of the script.",
@@ -363,6 +440,7 @@ class RenderService:
                     # Dialogue
                     if isinstance(block, Dialogue):
                         voice = self.voice_mgr.get_voice_for_character(block.character)
+                        block_start = cumulative_offset + mixer.state.current_position
                         try:
                             tts_start = time.perf_counter()
                             audio = self.tts.generate_audio(block.content, voice)
@@ -378,12 +456,24 @@ class RenderService:
                                 f"TTS synthesis failed for dialogue: {e}"
                             ) from e
                         mixer.add_dialogue(block, audio)
+                        if timing_blocks is not None:
+                            timing_blocks.append(
+                                TimingBlock(
+                                    type="dialogue",
+                                    text=block.content,
+                                    character=block.character,
+                                    start=block_start,
+                                    end=cumulative_offset
+                                    + mixer.state.current_position,
+                                )
+                            )
 
                     # Action (stage directions) with narrator
                     elif isinstance(block, Action) and self.narrator_cfg.enabled:
                         assert narrator_voice is not None, (
                             "Narrator voice should be determined before rendering"
                         )
+                        block_start = cumulative_offset + mixer.state.current_position
                         try:
                             tts_start = time.perf_counter()
                             audio = self.tts.generate_audio(
@@ -404,6 +494,16 @@ class RenderService:
                             pause_before=self.narrator_cfg.pause_before_narrative,
                             pause_after=self.narrator_cfg.pause_after_narrative,
                         )
+                        if timing_blocks is not None:
+                            timing_blocks.append(
+                                TimingBlock(
+                                    type="action",
+                                    text=block.content,
+                                    start=block_start,
+                                    end=cumulative_offset
+                                    + mixer.state.current_position,
+                                )
+                            )
                     # Other block types are skipped
 
                 # Get the mixed audio for this scene
@@ -419,6 +519,9 @@ class RenderService:
                     pause_between = self.config.timing.pause_between_scenes
                     self._add_silence(writer, pause_between)
                     total_audio_duration += pause_between
+                    cumulative_offset += scene_duration + pause_between
+                else:
+                    cumulative_offset += scene_duration
 
             # Finalize writer/player
             if output:
@@ -494,6 +597,7 @@ class RenderService:
             dialogue_count=dialogue_count,
             timing=timing,
             output_path=output_path,
+            timing_blocks=timing_blocks,
         )
 
     def _add_silence(
