@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -58,6 +59,10 @@ class TimingBlock:
     character: str | None = None
     start: float = 0.0
     end: float = 0.0
+
+
+class RenderCancelled(RuntimeError):
+    """Raised when a render is cancelled by the caller."""
 
 
 class RenderResult:
@@ -150,6 +155,8 @@ class RenderService:
         script_path: Path,
         output: str | Path | None = None,
         collect_timing: bool = False,
+        progress_callback: Callable[[dict[str, object]], None] | None = None,
+        control_callback: Callable[[], None] | None = None,
     ) -> RenderResult:
         """Render the script to audio using streaming.
 
@@ -157,6 +164,8 @@ class RenderService:
             script_path: Path to the Fountain script file.
             output: Output file path (str or Path). If None, streams to audio device.
             collect_timing: If True, collect per-block timing data for synchronized playback.
+            progress_callback: Optional callback for scene-level progress updates.
+            control_callback: Optional callback to pause/cancel rendering cooperatively.
 
         Returns:
             RenderResult object containing statistics and output path.
@@ -174,7 +183,13 @@ class RenderService:
         parse_time = time.perf_counter() - parse_start
 
         return self._render_script(
-            script_obj, output, collect_timing, total_start, parse_time
+            script_obj,
+            output,
+            collect_timing,
+            total_start,
+            parse_time,
+            progress_callback,
+            control_callback,
         )
 
     def render_from_string(
@@ -183,6 +198,8 @@ class RenderService:
         output: str | Path | None = None,
         collect_timing: bool = False,
         title: str | None = None,
+        progress_callback: Callable[[dict[str, object]], None] | None = None,
+        control_callback: Callable[[], None] | None = None,
     ) -> RenderResult:
         """Render a Fountain script from a string.
 
@@ -191,6 +208,8 @@ class RenderService:
             output: Output file path (str or Path). If None, streams to audio device.
             collect_timing: If True, collect per-block timing data for synchronized playback.
             title: Optional title for the script.
+            progress_callback: Optional callback for scene-level progress updates.
+            control_callback: Optional callback to pause/cancel rendering cooperatively.
 
         Returns:
             RenderResult object containing statistics and output path.
@@ -207,7 +226,13 @@ class RenderService:
         parse_time = time.perf_counter() - parse_start
 
         return self._render_script(
-            script_obj, output, collect_timing, total_start, parse_time
+            script_obj,
+            output,
+            collect_timing,
+            total_start,
+            parse_time,
+            progress_callback,
+            control_callback,
         )
 
     def _render_script(
@@ -217,6 +242,8 @@ class RenderService:
         collect_timing: bool,
         total_start: float,
         parse_time: float,
+        progress_callback: Callable[[dict[str, object]], None] | None = None,
+        control_callback: Callable[[], None] | None = None,
     ) -> RenderResult:
         """Core render logic shared by render() and render_from_string()."""
 
@@ -239,7 +266,20 @@ class RenderService:
         if dialogue_count == 0:
             raise ValueError("No dialogue found in script.")
 
+        self._check_control(control_callback)
+        if progress_callback:
+            progress_callback(
+                {
+                    "stage": "rendering",
+                    "message": "Preparing render",
+                    "current_scene": 0,
+                    "total_scenes": len(script_obj.scenes),
+                    "percent": 0,
+                }
+            )
+
         # Check for characters without voices (warn)
+        self._check_control(control_callback)
         characters_without_voices = []
         for char in script_obj.characters:
             if char not in self.config.voices:
@@ -259,6 +299,7 @@ class RenderService:
                 logger.warning("... and %d more", len(characters_without_voices) - 5)
 
         # Determine narrator voice if narrator is enabled
+        self._check_control(control_callback)
         narrator_voice = None
         if self.narrator_cfg.enabled:
             available_voices = self.tts.list_voices()
@@ -372,6 +413,20 @@ class RenderService:
             # Process all scenes and blocks in order
             for scene_idx, scene in enumerate(script_obj.scenes, 1):
                 logger.info("Rendering scene %d...", scene_idx)
+                self._check_control(control_callback)
+                if progress_callback:
+                    total_scenes = len(script_obj.scenes)
+                    percent = int(((scene_idx - 1) / max(total_scenes, 1)) * 95)
+                    progress_callback(
+                        {
+                            "stage": "rendering",
+                            "message": f"Rendering scene {scene_idx}/{total_scenes}: {scene.heading.content}",
+                            "current_scene": scene_idx,
+                            "total_scenes": total_scenes,
+                            "scene_heading": scene.heading.content,
+                            "percent": percent,
+                        }
+                    )
 
                 # Create a fresh mixer for this scene
                 mixer = AudioMixer(
@@ -389,6 +444,7 @@ class RenderService:
                 )
 
                 # Process scene heading
+                self._check_control(control_callback)
                 heading = scene.heading
                 if self.narrator_cfg.enabled:
                     # narrator_voice is guaranteed to be set if narrator is enabled
@@ -437,6 +493,7 @@ class RenderService:
 
                 # Process blocks within the scene
                 for block in scene.blocks:
+                    self._check_control(control_callback)
                     # Dialogue
                     if isinstance(block, Dialogue):
                         voice = self.voice_mgr.get_voice_for_character(block.character)
@@ -507,6 +564,7 @@ class RenderService:
                     # Other block types are skipped
 
                 # Get the mixed audio for this scene
+                self._check_control(control_callback)
                 scene_audio = mixer.get_mix()
                 scene_duration = len(scene_audio) / 1000.0  # pydub length in ms
 
@@ -523,7 +581,22 @@ class RenderService:
                 else:
                     cumulative_offset += scene_duration
 
+                if progress_callback:
+                    total_scenes = len(script_obj.scenes)
+                    percent = int((scene_idx / max(total_scenes, 1)) * 95)
+                    progress_callback(
+                        {
+                            "stage": "rendering",
+                            "message": f"Completed scene {scene_idx}/{total_scenes}",
+                            "current_scene": scene_idx,
+                            "total_scenes": total_scenes,
+                            "scene_heading": scene.heading.content,
+                            "percent": percent,
+                        }
+                    )
+
             # Finalize writer/player
+            self._check_control(control_callback)
             if output:
                 writer.finalize()
             else:
@@ -532,6 +605,15 @@ class RenderService:
             # If using temporary WAV, convert to desired format
             if use_temp_wav and temp_wav_path and output_path:
                 logger.info("Converting to %s...", output_format)
+                self._check_control(control_callback)
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "stage": "converting",
+                            "message": f"Converting to {output_format}",
+                            "percent": 96,
+                        }
+                    )
                 try:
                     cmd = ["ffmpeg", "-i", str(temp_wav_path), "-y"]
                     if output_format == "mp3":
@@ -599,6 +681,11 @@ class RenderService:
             output_path=output_path,
             timing_blocks=timing_blocks,
         )
+
+    def _check_control(self, control_callback: Callable[[], None] | None) -> None:
+        """Run the optional render control callback."""
+        if control_callback:
+            control_callback()
 
     def _add_silence(
         self, writer: StreamingWAVWriter | StreamingAudioPlayer, duration: float

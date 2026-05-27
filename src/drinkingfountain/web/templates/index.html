@@ -42,6 +42,11 @@
                         <summary>Audio Settings</summary>
                         <div class="config-body control-grid">
                             <div>
+                                <label class="form-label">Download Name</label>
+                                <input type="text" class="form-control" name="output_name"
+                                       value="drinkingfountain-render" placeholder="table-read">
+                            </div>
+                            <div>
                                 <label class="form-label">Sample Rate</label>
                                 <select class="form-select" name="sample_rate">
                                     <option value="22050" selected>22050 Hz</option>
@@ -129,9 +134,29 @@
                     <button type="button" class="btn btn-outline-secondary d-none" id="new-render-btn">
                         New Render
                     </button>
+                    <button type="button" class="btn btn-outline-secondary d-none" id="pause-render-btn">
+                        Pause
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary d-none" id="resume-render-btn">
+                        Resume
+                    </button>
+                    <button type="button" class="btn btn-outline-danger d-none" id="cancel-render-btn">
+                        Cancel
+                    </button>
                 </div>
 
                 <div id="error-display" class="alert alert-danger d-none"></div>
+
+                <div id="progress-panel" class="progress-panel d-none">
+                    <div class="progress-header">
+                        <div id="progress-stage">Queued</div>
+                        <div id="progress-percent">0%</div>
+                    </div>
+                    <div class="progress-track">
+                        <div id="progress-bar" class="progress-fill"></div>
+                    </div>
+                    <div id="progress-message" class="progress-message">Waiting to start.</div>
+                </div>
             </form>
 
             <aside id="results-section" class="results-panel d-none">
@@ -150,6 +175,7 @@
         <div class="app-container player-inner">
             <div class="player-label">Rendered Audio</div>
             <audio id="audio-player" controls></audio>
+            <a id="download-link" class="btn btn-download d-none" href="#">Download</a>
         </div>
     </div>
 

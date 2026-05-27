@@ -3,26 +3,39 @@
 from __future__ import annotations
 
 import logging
+import re
 import tempfile
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FuturesTimeoutError
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
 
 from drinkingfountain.config import Config
 from drinkingfountain.parser.fountain import FountainParser
-from drinkingfountain.services import RenderService, TimingBlock, VoiceService
+from drinkingfountain.services import (
+    RenderCancelled,
+    RenderService,
+    TimingBlock,
+    VoiceService,
+)
 from drinkingfountain.tts import CachedTTSBackend, PiperTTSBackend
 from drinkingfountain.voices import VoiceManager
 
 logger = logging.getLogger(__name__)
 
-RENDER_TIMEOUT_SECONDS = 300  # 5 minutes
+RENDER_EXECUTOR = ThreadPoolExecutor(max_workers=2)
+
+
+@dataclass
+class RenderControl:
+    """Cooperative controls for a background render job."""
+
+    pause_event: threading.Event
+    cancel_event: threading.Event
 
 
 class RenderStore:
@@ -30,9 +43,11 @@ class RenderStore:
 
     MAX_ENTRIES = 50
     TTL_SECONDS = 1800  # 30 minutes
+    TERMINAL_STATUSES = {"complete", "failed", "cancelled"}
 
     def __init__(self) -> None:
         self._store: dict[str, dict] = {}
+        self._controls: dict[str, RenderControl] = {}
         self._lock = threading.Lock()
 
     def put(
@@ -43,6 +58,7 @@ class RenderStore:
         audio_format: str,
         title: str,
         duration: float,
+        download_name: str | None = None,
     ) -> None:
         timing_json = None
         if timing_blocks is not None:
@@ -58,15 +74,212 @@ class RenderStore:
                 "timing_json": timing_json,
                 "format": audio_format,
                 "created_at": time.time(),
+                "updated_at": time.time(),
+                "status": "complete",
+                "progress": {
+                    "stage": "complete",
+                    "message": "Render complete",
+                    "percent": 100,
+                },
+                "error": None,
+                "title": title,
+                "duration": duration,
+                "download_name": download_name
+                or build_download_name(title, audio_format),
             }
             self._evict()
+
+    def put_pending(
+        self,
+        render_id: str,
+        audio_path: Path,
+        audio_format: str,
+        download_name: str,
+    ) -> None:
+        with self._lock:
+            now = time.time()
+            self._controls[render_id] = RenderControl(
+                pause_event=threading.Event(),
+                cancel_event=threading.Event(),
+            )
+            self._store[render_id] = {
+                "audio_path": audio_path,
+                "timing_json": None,
+                "format": audio_format,
+                "created_at": now,
+                "updated_at": now,
+                "status": "queued",
+                "progress": {
+                    "stage": "queued",
+                    "message": "Queued",
+                    "percent": 0,
+                },
+                "error": None,
+                "title": "Untitled",
+                "duration": 0.0,
+                "download_name": download_name,
+            }
+            self._evict()
+
+    def update_progress(self, render_id: str, progress: dict[str, object]) -> None:
+        with self._lock:
+            entry = self._store.get(render_id)
+            if entry is None:
+                return
+            if entry["status"] in {"complete", "failed", "cancelled"}:
+                return
+            if entry["status"] != "paused":
+                entry["status"] = "running"
+            entry["updated_at"] = time.time()
+            entry["progress"] = {
+                **entry.get("progress", {}),
+                **progress,
+            }
+
+    def complete(
+        self,
+        render_id: str,
+        timing_blocks: list[TimingBlock] | None,
+        title: str,
+        duration: float,
+    ) -> None:
+        timing_json = None
+        if timing_blocks is not None:
+            timing_json = {
+                "title": title,
+                "duration": duration,
+                "blocks": [asdict(b) for b in timing_blocks],
+            }
+
+        with self._lock:
+            entry = self._store.get(render_id)
+            if entry is None:
+                return
+            entry["timing_json"] = timing_json
+            entry["status"] = "complete"
+            entry["updated_at"] = time.time()
+            entry["progress"] = {
+                "stage": "complete",
+                "message": "Render complete",
+                "percent": 100,
+            }
+            entry["error"] = None
+            entry["title"] = title
+            entry["duration"] = duration
+            self._controls.pop(render_id, None)
+
+    def fail(self, render_id: str, error: str) -> None:
+        with self._lock:
+            entry = self._store.get(render_id)
+            if entry is None:
+                return
+            entry["status"] = "failed"
+            entry["updated_at"] = time.time()
+            entry["error"] = error
+            entry["progress"] = {
+                "stage": "failed",
+                "message": error,
+                "percent": entry.get("progress", {}).get("percent", 0),
+            }
+            audio_path = entry.get("audio_path")
+            if isinstance(audio_path, Path) and audio_path.exists():
+                try:
+                    audio_path.unlink()
+                except OSError:
+                    pass
+            self._remove_temp_wav(audio_path)
+            self._controls.pop(render_id, None)
+
+    def pause(self, render_id: str) -> bool:
+        with self._lock:
+            entry = self._store.get(render_id)
+            control = self._controls.get(render_id)
+            if entry is None or control is None:
+                return False
+            if entry["status"] not in {"queued", "running", "paused"}:
+                return False
+            control.pause_event.set()
+            entry["status"] = "paused"
+            entry["updated_at"] = time.time()
+            entry["progress"] = {
+                **entry.get("progress", {}),
+                "stage": "paused",
+                "message": "Render paused",
+            }
+            return True
+
+    def resume(self, render_id: str) -> bool:
+        with self._lock:
+            entry = self._store.get(render_id)
+            control = self._controls.get(render_id)
+            if entry is None or control is None:
+                return False
+            if entry["status"] != "paused":
+                return False
+            control.pause_event.clear()
+            entry["status"] = "running"
+            entry["updated_at"] = time.time()
+            entry["progress"] = {
+                **entry.get("progress", {}),
+                "stage": "rendering",
+                "message": "Render resumed",
+            }
+            return True
+
+    def request_cancel(self, render_id: str) -> bool:
+        with self._lock:
+            entry = self._store.get(render_id)
+            control = self._controls.get(render_id)
+            if entry is None or control is None:
+                return False
+            if entry["status"] in {"complete", "failed", "cancelled"}:
+                return False
+            control.cancel_event.set()
+            control.pause_event.clear()
+            entry["status"] = "cancelling"
+            entry["updated_at"] = time.time()
+            entry["progress"] = {
+                **entry.get("progress", {}),
+                "stage": "cancelling",
+                "message": "Cancelling render",
+            }
+            return True
+
+    def cancelled(self, render_id: str) -> None:
+        with self._lock:
+            entry = self._store.get(render_id)
+            if entry is None:
+                return
+            entry["status"] = "cancelled"
+            entry["updated_at"] = time.time()
+            entry["error"] = None
+            entry["progress"] = {
+                **entry.get("progress", {}),
+                "stage": "cancelled",
+                "message": "Render cancelled",
+            }
+            audio_path = entry.get("audio_path")
+            if isinstance(audio_path, Path) and audio_path.exists():
+                try:
+                    audio_path.unlink()
+                except OSError:
+                    pass
+            self._remove_temp_wav(audio_path)
+            self._controls.pop(render_id, None)
+
+    def get_control(self, render_id: str) -> RenderControl | None:
+        with self._lock:
+            return self._controls.get(render_id)
 
     def get(self, render_id: str) -> dict | None:
         with self._lock:
             entry = self._store.get(render_id)
             if entry is None:
                 return None
-            if time.time() - entry["created_at"] > self.TTL_SECONDS:
+            if entry["status"] in self.TERMINAL_STATUSES and (
+                time.time() - entry.get("updated_at", entry["created_at"])
+                > self.TTL_SECONDS
+            ):
                 self._remove(render_id)
                 return None
             return entry
@@ -76,19 +289,24 @@ class RenderStore:
         expired = [
             rid
             for rid, e in self._store.items()
-            if now - e["created_at"] > self.TTL_SECONDS
+            if e["status"] in self.TERMINAL_STATUSES
+            and now - e.get("updated_at", e["created_at"]) > self.TTL_SECONDS
         ]
         for rid in expired:
             self._remove(rid)
 
         if len(self._store) > self.MAX_ENTRIES:
-            by_age = sorted(self._store.items(), key=lambda x: x[1]["created_at"])
+            by_age = sorted(
+                self._store.items(),
+                key=lambda x: x[1].get("updated_at", x[1]["created_at"]),
+            )
             excess = len(self._store) - self.MAX_ENTRIES
             for rid, _ in by_age[:excess]:
                 self._remove(rid)
 
     def _remove(self, render_id: str) -> None:
         entry = self._store.pop(render_id, None)
+        self._controls.pop(render_id, None)
         if entry is None:
             return
         audio_path = entry.get("audio_path")
@@ -97,6 +315,16 @@ class RenderStore:
                 audio_path.unlink()
             except OSError:
                 pass
+        self._remove_temp_wav(audio_path)
+
+    def _remove_temp_wav(self, audio_path: object) -> None:
+        if audio_path and isinstance(audio_path, Path):
+            temp_wav_path = audio_path.with_suffix(".tmp.wav")
+            if temp_wav_path.exists():
+                try:
+                    temp_wav_path.unlink()
+                except OSError:
+                    pass
 
 
 render_store = RenderStore()
@@ -109,6 +337,88 @@ def get_script_text_from_request() -> str:
     if uploaded and uploaded.filename:
         script_text = uploaded.read().decode("utf-8", errors="replace").strip()
     return script_text
+
+
+def build_download_name(name: str | None, audio_format: str) -> str:
+    """Build a safe browser download filename."""
+    stem = (name or "drinkingfountain-render").strip()
+    stem = Path(stem).stem
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-._")
+    if not stem:
+        stem = "drinkingfountain-render"
+    return f"{stem}.{audio_format}"
+
+
+def render_job(
+    render_id: str,
+    script_text: str,
+    output_path: Path,
+    config_obj: Config,
+) -> None:
+    """Run a render in the background and update the render store."""
+
+    def check_control() -> None:
+        control = render_store.get_control(render_id)
+        if control is None:
+            return
+        if control.cancel_event.is_set():
+            raise RenderCancelled("Render cancelled")
+        while control.pause_event.is_set():
+            if control.cancel_event.is_set():
+                raise RenderCancelled("Render cancelled")
+            time.sleep(0.25)
+        if control.cancel_event.is_set():
+            raise RenderCancelled("Render cancelled")
+
+    try:
+        render_store.update_progress(
+            render_id,
+            {
+                "stage": "initializing",
+                "message": "Initializing voices",
+                "percent": 0,
+            },
+        )
+        piper = PiperTTSBackend(max_text_length=500)
+        tts = CachedTTSBackend(piper)
+        if not tts.list_voices():
+            raise RuntimeError(
+                "No voice models installed. Use 'drinkingfountain voices download <voice_id>' to install one."
+            )
+
+        voice_mgr = VoiceManager(tts)
+        if config_obj.voices:
+            for character, voice in config_obj.voices.items():
+                voice_mgr.set_character_voice(character, voice)
+
+        service = RenderService(
+            config=config_obj,
+            tts=tts,
+            voice_mgr=voice_mgr,
+            narrator_cfg=config_obj.narrator,
+        )
+
+        result = service.render_from_string(
+            script_text,
+            output=str(output_path),
+            collect_timing=True,
+            progress_callback=lambda progress: render_store.update_progress(
+                render_id, progress
+            ),
+            control_callback=check_control,
+        )
+        render_store.complete(
+            render_id=render_id,
+            timing_blocks=result.timing_blocks,
+            title=result.script_title,
+            duration=result.duration,
+        )
+    except RenderCancelled:
+        logger.info("Render job cancelled: %s", render_id)
+        render_store.cancelled(render_id)
+    except Exception as e:
+        logger.exception("Render job failed")
+        render_store.fail(render_id, str(e))
 
 
 def build_config_from_form(form: dict) -> Config:
@@ -245,102 +555,78 @@ def register_routes(app: Flask) -> None:
         except (ValueError, TypeError) as e:
             return jsonify({"error": f"Invalid configuration: {e}"}), 400
 
-        # Create temp output file
         suffix = f".{output_format}"
         tmp = tempfile.NamedTemporaryFile(
             delete=False, suffix=suffix, prefix="df_render_"
         )
         tmp.close()
         output_path = Path(tmp.name)
-
-        try:
-            piper = PiperTTSBackend(max_text_length=500)
-            tts = CachedTTSBackend(piper)
-            if not tts.list_voices():
-                if output_path.exists():
-                    output_path.unlink()
-                return (
-                    jsonify(
-                        {
-                            "error": "No voice models installed. Use 'drinkingfountain voices download <voice_id>' to install one."
-                        }
-                    ),
-                    500,
-                )
-
-            voice_mgr = VoiceManager(tts)
-            if config_obj.voices:
-                for character, voice in config_obj.voices.items():
-                    voice_mgr.set_character_voice(character, voice)
-
-            service = RenderService(
-                config=config_obj,
-                tts=tts,
-                voice_mgr=voice_mgr,
-                narrator_cfg=config_obj.narrator,
-            )
-
-            # Run render with timeout. Avoid the executor context manager here:
-            # it waits for running work before returning, which would defeat the
-            # HTTP timeout response for long renders.
-            executor = ThreadPoolExecutor(max_workers=1)
-            future = executor.submit(
-                service.render_from_string,
-                script_text,
-                output=str(output_path),
-                collect_timing=True,
-            )
-            executor_shutdown = False
-            try:
-                result = future.result(timeout=RENDER_TIMEOUT_SECONDS)
-            except FuturesTimeoutError:
-                future.cancel()
-                executor.shutdown(wait=False, cancel_futures=True)
-                executor_shutdown = True
-                if output_path.exists():
-                    output_path.unlink()
-                return (
-                    jsonify(
-                        {
-                            "error": f"Render timed out after {RENDER_TIMEOUT_SECONDS} seconds."
-                        }
-                    ),
-                    504,
-                )
-            finally:
-                if not executor_shutdown:
-                    executor.shutdown(wait=True)
-
-        except (ValueError, FileNotFoundError, RuntimeError) as e:
-            if output_path.exists():
-                output_path.unlink()
-            return jsonify({"error": str(e)}), 400
-        except Exception as e:
-            logger.exception("Unexpected render error")
-            if output_path.exists():
-                output_path.unlink()
-            return jsonify({"error": f"Render failed: {e}"}), 500
-
         render_id = uuid.uuid4().hex[:12]
-        render_store.put(
+        download_name = build_download_name(
+            request.form.get("output_name") or "drinkingfountain-render",
+            output_format,
+        )
+
+        render_store.put_pending(
             render_id=render_id,
             audio_path=output_path,
-            timing_blocks=result.timing_blocks,
             audio_format=output_format,
-            title=result.script_title,
-            duration=result.duration,
+            download_name=download_name,
+        )
+        RENDER_EXECUTOR.submit(
+            render_job, render_id, script_text, output_path, config_obj
         )
 
         return jsonify(
             {
-                "status": "complete",
+                "status": "queued",
                 "render_id": render_id,
-                "audio_url": f"/audio/{render_id}",
-                "timing_url": f"/timing/{render_id}",
-                "duration": result.duration,
-                "script_title": result.script_title,
+                "progress_url": f"/progress/{render_id}",
             }
-        )
+        ), 202
+
+    @app.route("/progress/<render_id>")
+    def progress(render_id: str):  # type: ignore[no-untyped-def]
+        entry = render_store.get(render_id)
+        if entry is None:
+            return jsonify({"error": "Not found or expired"}), 404
+
+        payload = {
+            "status": entry["status"],
+            "render_id": render_id,
+            "progress": entry["progress"],
+            "error": entry["error"],
+        }
+        if entry["status"] == "complete":
+            payload.update(
+                {
+                    "audio_url": f"/audio/{render_id}",
+                    "download_url": f"/download/{render_id}",
+                    "timing_url": f"/timing/{render_id}",
+                    "duration": entry["duration"],
+                    "script_title": entry["title"],
+                    "download_name": entry["download_name"],
+                }
+            )
+        return jsonify(payload)
+
+    @app.route("/pause/<render_id>", methods=["POST"])
+    def pause(render_id: str):  # type: ignore[no-untyped-def]
+        if not render_store.pause(render_id):
+            return jsonify({"error": "Render cannot be paused"}), 404
+        return jsonify({"status": "paused", "render_id": render_id})
+
+    @app.route("/resume/<render_id>", methods=["POST"])
+    def resume(render_id: str):  # type: ignore[no-untyped-def]
+        if not render_store.resume(render_id):
+            return jsonify({"error": "Render cannot be resumed"}), 404
+        return jsonify({"status": "running", "render_id": render_id})
+
+    @app.route("/cancel/<render_id>", methods=["POST"])
+    def cancel(render_id: str):  # type: ignore[no-untyped-def]
+        if not render_store.request_cancel(render_id):
+            return jsonify({"error": "Render cannot be cancelled"}), 404
+        return jsonify({"status": "cancelling", "render_id": render_id})
 
     @app.route("/audio/<render_id>")
     def audio(render_id: str):  # type: ignore[no-untyped-def]
@@ -352,6 +638,22 @@ def register_routes(app: Flask) -> None:
             return jsonify({"error": "Audio file not found"}), 404
         mime = "audio/wav" if entry["format"] == "wav" else "audio/mpeg"
         return send_file(audio_path, mimetype=mime)
+
+    @app.route("/download/<render_id>")
+    def download(render_id: str):  # type: ignore[no-untyped-def]
+        entry = render_store.get(render_id)
+        if entry is None:
+            return jsonify({"error": "Not found or expired"}), 404
+        audio_path = entry["audio_path"]
+        if entry["status"] != "complete" or not audio_path.exists():
+            return jsonify({"error": "Audio file not ready"}), 404
+        mime = "audio/wav" if entry["format"] == "wav" else "audio/mpeg"
+        return send_file(
+            audio_path,
+            mimetype=mime,
+            as_attachment=True,
+            download_name=entry["download_name"],
+        )
 
     @app.route("/timing/<render_id>")
     def timing(render_id: str):  # type: ignore[no-untyped-def]

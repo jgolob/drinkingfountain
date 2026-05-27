@@ -435,6 +435,44 @@ body.app-shell {
     border-radius: 6px;
 }
 
+.progress-panel {
+    margin-top: 16px;
+    padding: 14px;
+    border: 1px solid #c8dedb;
+    border-radius: 8px;
+    background: #f2faf8;
+}
+
+.progress-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    color: var(--accent-dark);
+    font-size: 0.85rem;
+    font-weight: 900;
+}
+
+.progress-track {
+    height: 10px;
+    margin: 10px 0 8px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: #d7e7e4;
+}
+
+.progress-fill {
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--accent);
+    transition: width 0.25s ease;
+}
+
+.progress-message {
+    color: var(--muted);
+    font-size: 0.86rem;
+}
+
 #script-display {
     max-height: calc(100vh - 260px);
     min-height: 420px;
@@ -513,6 +551,7 @@ body.app-shell {
 }
 
 .player-label {
+    flex: 0 0 auto;
     color: #fffdf8;
     font-size: 0.88rem;
     font-weight: 800;
@@ -526,6 +565,19 @@ body.app-shell {
 
 #audio-player {
     width: min(680px, 58vw);
+}
+
+.btn-download {
+    flex: 0 0 auto;
+    border-color: rgba(255, 255, 255, 0.24);
+    background: rgba(255, 255, 255, 0.08);
+    color: #fffdf8;
+}
+
+.btn-download:hover {
+    border-color: rgba(255, 255, 255, 0.42);
+    background: rgba(255, 255, 255, 0.14);
+    color: #fffdf8;
 }
 
 @media (max-width: 1080px) {
