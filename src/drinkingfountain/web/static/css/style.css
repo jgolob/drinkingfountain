@@ -506,6 +506,44 @@ body.app-shell {
     box-shadow: inset 4px 0 0 #d39a16;
 }
 
+.script-block.ready {
+    border-color: rgba(35, 108, 103, 0.24);
+}
+
+.script-block.rendering {
+    border-color: rgba(35, 108, 103, 0.5);
+    background: #f2faf8;
+}
+
+.live-scene-kicker,
+.live-scene-status {
+    color: var(--muted);
+    font-size: 0.74rem;
+    font-weight: 900;
+    text-transform: uppercase;
+}
+
+.live-scene-status {
+    margin-top: 6px;
+}
+
+.live-scene-lines {
+    margin-top: 10px;
+    padding-left: 12px;
+    border-left: 2px solid #ded7ca;
+}
+
+.live-line {
+    padding: 8px 10px;
+    margin-top: 6px;
+    border-radius: 6px;
+}
+
+.live-line.active {
+    background: #fff2c9;
+    box-shadow: inset 3px 0 0 #d39a16;
+}
+
 .block-scene_heading .block-text {
     color: #151b21;
     font-size: 0.9rem;

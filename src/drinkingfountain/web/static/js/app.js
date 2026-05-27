@@ -32,6 +32,13 @@ document.addEventListener('DOMContentLoaded', function () {
     let progressTimer = null;
     let currentRenderId = null;
     let currentProgressUrl = null;
+    let currentMode = 'file';
+    let liveStateUrl = null;
+    let liveScenes = [];
+    let liveReadyScenes = {};
+    let liveCurrentScene = 0;
+    let liveDownloadStarted = false;
+    let syncHandler = null;
 
     // Load voices on page load
     fetch('/api/voices')
@@ -107,6 +114,21 @@ document.addEventListener('DOMContentLoaded', function () {
                     return;
                 }
 
+                if (resp.data.mode === 'live') {
+                    currentMode = 'live';
+                    currentRenderId = resp.data.live_id;
+                    currentProgressUrl = resp.data.progress_url;
+                    liveStateUrl = resp.data.progress_url;
+                    liveScenes = resp.data.scenes || [];
+                    liveReadyScenes = {};
+                    liveCurrentScene = 0;
+                    liveDownloadStarted = false;
+                    setupLivePreview(resp.data);
+                    pollLiveState(resp.data.progress_url);
+                    return;
+                }
+
+                currentMode = 'file';
                 if (resp.data.status === 'queued' && resp.data.progress_url) {
                     currentRenderId = resp.data.render_id;
                     currentProgressUrl = resp.data.progress_url;
@@ -135,6 +157,11 @@ document.addEventListener('DOMContentLoaded', function () {
         window.clearTimeout(progressTimer);
         currentRenderId = null;
         currentProgressUrl = null;
+        liveStateUrl = null;
+        liveReadyScenes = {};
+        liveScenes = [];
+        liveCurrentScene = 0;
+        liveDownloadStarted = false;
         audioPlayer.pause();
         audioPlayer.removeAttribute('src');
         scriptDisplay.innerHTML = '';
@@ -191,6 +218,14 @@ document.addEventListener('DOMContentLoaded', function () {
                 setRenderControls(resp.data.status);
 
                 if (resp.data.status === 'complete') {
+                    if (currentMode === 'live' && resp.data.download_url) {
+                        downloadLink.href = resp.data.download_url;
+                        downloadLink.download = resp.data.download_name || '';
+                        downloadLink.classList.remove('d-none');
+                        showProgress({ stage: 'complete', message: 'Download ready', percent: 100 });
+                        newRenderBtn.classList.remove('d-none');
+                        return;
+                    }
                     finishRender(resp.data);
                     return;
                 }
@@ -217,6 +252,57 @@ document.addEventListener('DOMContentLoaded', function () {
                 renderBtnText.textContent = 'Render Audio';
                 renderSpinner.classList.add('d-none');
                 progressPanel.classList.add('d-none');
+                errorDisplay.textContent = err.message;
+                errorDisplay.classList.remove('d-none');
+            });
+    }
+
+    function pollLiveState(stateUrl) {
+        window.clearTimeout(progressTimer);
+        fetch(stateUrl)
+            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+            .then(function (resp) {
+                if (!resp.ok || resp.data.error) {
+                    throw new Error(resp.data.error || 'Live preview failed.');
+                }
+
+                showProgress(resp.data.progress || {});
+                setRenderControls(resp.data.status);
+                liveReadyScenes = resp.data.ready_scenes || {};
+                updateLiveSceneList(resp.data);
+
+                if (resp.data.status === 'cancelled') {
+                    renderBtn.disabled = false;
+                    renderBtnText.textContent = 'Render Audio';
+                    renderSpinner.classList.add('d-none');
+                    newRenderBtn.classList.remove('d-none');
+                    setRenderControls('cancelled');
+                    return;
+                }
+
+                if (resp.data.status === 'failed') {
+                    throw new Error(resp.data.error || 'Live preview failed.');
+                }
+
+                if (!audioPlayer.src && liveReadyScenes[String(liveCurrentScene)]) {
+                    playLiveScene(liveCurrentScene);
+                }
+
+                if (resp.data.status === 'complete' && resp.data.download_requested && !liveDownloadStarted) {
+                    liveDownloadStarted = true;
+                    startDownloadRender();
+                }
+
+                if (resp.data.status !== 'complete' || resp.data.download_requested) {
+                    progressTimer = window.setTimeout(function () {
+                        pollLiveState(stateUrl);
+                    }, 750);
+                }
+            })
+            .catch(function (err) {
+                renderBtn.disabled = false;
+                renderBtnText.textContent = 'Render Audio';
+                renderSpinner.classList.add('d-none');
                 errorDisplay.textContent = err.message;
                 errorDisplay.classList.remove('d-none');
             });
@@ -264,6 +350,176 @@ document.addEventListener('DOMContentLoaded', function () {
             })
             .catch(function () {
                 resultsSection.classList.remove('d-none');
+            });
+    }
+
+    function setupLivePreview(data) {
+        resultTitle.textContent = (data.script_title || 'Untitled') + ' (live)';
+        resultsSection.classList.remove('d-none');
+        audioPlayerBar.classList.remove('d-none');
+        downloadLink.classList.add('d-none');
+        renderLiveSceneList(data.scenes || []);
+        audioPlayer.removeAttribute('src');
+    }
+
+    function renderLiveSceneList(scenes) {
+        scriptDisplay.innerHTML = '';
+        scenes.forEach(function (scene) {
+            const sceneEl = document.createElement('div');
+            sceneEl.className = 'script-block live-scene';
+            sceneEl.dataset.sceneIndex = scene.index;
+            sceneEl.innerHTML =
+                '<div class="live-scene-kicker">Scene ' + (scene.index + 1) + '</div>' +
+                '<div class="block-text">' + escapeHtml(scene.heading || 'Untitled Scene') + '</div>' +
+                '<div class="live-scene-status">Queued</div>' +
+                '<div class="live-scene-lines"></div>';
+            sceneEl.addEventListener('click', function () {
+                jumpToLiveScene(scene.index);
+            });
+            scriptDisplay.appendChild(sceneEl);
+        });
+    }
+
+    function updateLiveSceneList(state) {
+        (state.scenes || liveScenes).forEach(function (scene) {
+            const sceneEl = scriptDisplay.querySelector('[data-scene-index="' + scene.index + '"]');
+            if (!sceneEl) return;
+            sceneEl.classList.toggle('active', scene.index === liveCurrentScene);
+            sceneEl.classList.toggle('rendering', state.rendering_scene === scene.index);
+            sceneEl.classList.toggle('ready', Boolean(liveReadyScenes[String(scene.index)]));
+
+            const status = sceneEl.querySelector('.live-scene-status');
+            if (status) {
+                if (scene.index === state.rendering_scene) {
+                    status.textContent = 'Rendering';
+                } else if (liveReadyScenes[String(scene.index)]) {
+                    status.textContent = scene.index === liveCurrentScene ? 'Playing' : 'Ready';
+                } else {
+                    status.textContent = 'Queued';
+                }
+            }
+
+            const ready = liveReadyScenes[String(scene.index)];
+            const lines = sceneEl.querySelector('.live-scene-lines');
+            if (ready && lines && !lines.children.length) {
+                renderLiveTimingLines(lines, ready.timing || [], scene.index);
+            }
+        });
+    }
+
+    function renderLiveTimingLines(container, blocks, sceneIndex) {
+        blocks.forEach(function (block, idx) {
+            const el = document.createElement('div');
+            el.className = 'live-line block-' + block.type;
+            el.dataset.sceneIndex = sceneIndex;
+            el.dataset.start = block.start;
+            el.dataset.end = block.end;
+            el.dataset.index = idx;
+            if (block.type === 'dialogue') {
+                el.innerHTML =
+                    '<div class="block-character">' + escapeHtml(block.character || '') + '</div>' +
+                    '<div class="block-text">' + escapeHtml(block.text || '') + '</div>';
+            } else {
+                el.innerHTML = '<div class="block-text">' + escapeHtml(block.text || '') + '</div>';
+            }
+            container.appendChild(el);
+        });
+    }
+
+    function jumpToLiveScene(sceneIndex) {
+        if (!currentRenderId || currentMode !== 'live') return;
+        audioPlayer.pause();
+        audioPlayer.removeAttribute('src');
+        liveCurrentScene = sceneIndex;
+        fetch('/live/' + currentRenderId + '/play/' + sceneIndex, { method: 'POST' })
+            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+            .then(function (resp) {
+                if (!resp.ok || resp.data.error) {
+                    throw new Error(resp.data.error || 'Could not queue scene.');
+                }
+                showProgress({ stage: 'queued', message: 'Queued scene ' + (sceneIndex + 1), percent: 0 });
+                if (liveStateUrl) pollLiveState(liveStateUrl);
+            })
+            .catch(function (err) {
+                errorDisplay.textContent = err.message;
+                errorDisplay.classList.remove('d-none');
+            });
+    }
+
+    function playLiveScene(sceneIndex) {
+        const ready = liveReadyScenes[String(sceneIndex)];
+        if (!ready) {
+            showProgress({ stage: 'buffering', message: 'Waiting for scene ' + (sceneIndex + 1), percent: progressPercent.textContent });
+            return;
+        }
+        liveCurrentScene = sceneIndex;
+        audioPlayer.src = ready.audio_url;
+        audioPlayerBar.classList.remove('d-none');
+        wireLiveSync(sceneIndex);
+        audioPlayer.play().catch(function () {});
+        updateLiveSceneList({ scenes: liveScenes, ready_scenes: liveReadyScenes });
+    }
+
+    audioPlayer.addEventListener('ended', function () {
+        if (currentMode !== 'live') return;
+        const nextScene = liveCurrentScene + 1;
+        if (nextScene >= liveScenes.length) {
+            setRenderControls('complete');
+            showProgress({ stage: 'complete', message: 'Live preview complete', percent: 100 });
+            newRenderBtn.classList.remove('d-none');
+            return;
+        }
+        if (liveReadyScenes[String(nextScene)]) {
+            playLiveScene(nextScene);
+        } else {
+            liveCurrentScene = nextScene;
+            showProgress({ stage: 'buffering', message: 'Waiting for scene ' + (nextScene + 1), percent: progressPercent.textContent });
+            if (liveStateUrl) pollLiveState(liveStateUrl);
+        }
+    });
+
+    function wireLiveSync(sceneIndex) {
+        if (syncHandler) {
+            audioPlayer.removeEventListener('timeupdate', syncHandler);
+        }
+        syncHandler = function () {
+            const lines = scriptDisplay.querySelectorAll('.live-line[data-scene-index="' + sceneIndex + '"]');
+            let found = null;
+            for (let i = 0; i < lines.length; i++) {
+                const s = parseFloat(lines[i].dataset.start);
+                const e = parseFloat(lines[i].dataset.end);
+                if (audioPlayer.currentTime >= s && audioPlayer.currentTime < e) {
+                    found = lines[i];
+                    break;
+                }
+            }
+            scriptDisplay.querySelectorAll('.live-line.active').forEach(function (line) {
+                line.classList.remove('active');
+            });
+            if (found) {
+                found.classList.add('active');
+                found.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        };
+        audioPlayer.addEventListener('timeupdate', syncHandler);
+    }
+
+    function startDownloadRender() {
+        const downloadData = new FormData(form);
+        downloadData.delete('live_preview');
+        downloadData.set('create_download', 'on');
+        fetch('/render', { method: 'POST', body: downloadData })
+            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+            .then(function (resp) {
+                if (!resp.ok || resp.data.error) {
+                    throw new Error(resp.data.error || 'Download render failed.');
+                }
+                currentProgressUrl = resp.data.progress_url;
+                pollProgress(resp.data.progress_url);
+            })
+            .catch(function (err) {
+                errorDisplay.textContent = err.message;
+                errorDisplay.classList.remove('d-none');
             });
     }
 
@@ -430,6 +686,13 @@ document.addEventListener('DOMContentLoaded', function () {
         pauseRenderBtn.classList.add('d-none');
         resumeRenderBtn.classList.add('d-none');
         cancelRenderBtn.classList.add('d-none');
+
+        if (currentMode === 'live') {
+            if (status === 'queued' || status === 'running' || status === 'cancelling') {
+                cancelRenderBtn.classList.remove('d-none');
+            }
+            return;
+        }
 
         if (status === 'queued' || status === 'running' || status === 'cancelling') {
             pauseRenderBtn.classList.toggle('d-none', status === 'cancelling');

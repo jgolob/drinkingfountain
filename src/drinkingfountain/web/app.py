@@ -16,6 +16,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 
 from drinkingfountain.config import Config
 from drinkingfountain.parser.fountain import FountainParser
+from drinkingfountain.parser.script import Action, Dialogue, Scene
 from drinkingfountain.services import (
     RenderCancelled,
     RenderService,
@@ -28,6 +29,7 @@ from drinkingfountain.voices import VoiceManager
 logger = logging.getLogger(__name__)
 
 RENDER_EXECUTOR = ThreadPoolExecutor(max_workers=2)
+LIVE_EXECUTOR = ThreadPoolExecutor(max_workers=2)
 
 
 @dataclass
@@ -330,6 +332,277 @@ class RenderStore:
 render_store = RenderStore()
 
 
+class LiveRenderStore:
+    """In-memory store for one-scene-lookahead live preview sessions."""
+
+    MAX_ENTRIES = 20
+    TTL_SECONDS = 1800
+    TERMINAL_STATUSES = {"complete", "failed", "cancelled"}
+
+    def __init__(self) -> None:
+        self._store: dict[str, dict] = {}
+        self._controls: dict[str, RenderControl] = {}
+        self._lock = threading.Lock()
+
+    def create(
+        self,
+        live_id: str,
+        scenes: list[dict[str, object]],
+        script_title: str,
+        script_text: str,
+        config_obj: Config,
+        output_format: str,
+        download_requested: bool,
+    ) -> None:
+        with self._lock:
+            now = time.time()
+            self._controls[live_id] = RenderControl(
+                pause_event=threading.Event(),
+                cancel_event=threading.Event(),
+            )
+            self._store[live_id] = {
+                "status": "queued",
+                "created_at": now,
+                "updated_at": now,
+                "error": None,
+                "progress": {
+                    "stage": "queued",
+                    "message": "Preparing live preview",
+                    "percent": 0,
+                },
+                "scenes": scenes,
+                "script_title": script_title,
+                "script_text": script_text,
+                "config": config_obj,
+                "format": output_format,
+                "download_requested": download_requested,
+                "generation": 0,
+                "requested_scene": 0,
+                "rendering_scene": None,
+                "ready_scenes": {},
+            }
+            self._evict()
+
+    def get(self, live_id: str) -> dict | None:
+        with self._lock:
+            entry = self._store.get(live_id)
+            if entry is None:
+                return None
+            if entry["status"] in self.TERMINAL_STATUSES and (
+                time.time() - entry.get("updated_at", entry["created_at"])
+                > self.TTL_SECONDS
+            ):
+                self._remove(live_id)
+                return None
+            return entry
+
+    def snapshot(self, live_id: str) -> dict | None:
+        with self._lock:
+            entry = self._store.get(live_id)
+            if entry is None:
+                return None
+            return {
+                "status": entry["status"],
+                "live_id": live_id,
+                "error": entry["error"],
+                "progress": entry["progress"],
+                "scenes": entry["scenes"],
+                "script_title": entry["script_title"],
+                "download_requested": entry["download_requested"],
+                "requested_scene": entry["requested_scene"],
+                "rendering_scene": entry["rendering_scene"],
+                "ready_scenes": {
+                    str(idx): {
+                        "scene_index": idx,
+                        "audio_url": f"/live/{live_id}/scene/{idx}/audio",
+                        "timing": result["timing"],
+                        "duration": result["duration"],
+                    }
+                    for idx, result in entry["ready_scenes"].items()
+                },
+            }
+
+    def get_control(self, live_id: str) -> RenderControl | None:
+        with self._lock:
+            return self._controls.get(live_id)
+
+    def request_scene(self, live_id: str, scene_index: int) -> int | None:
+        with self._lock:
+            entry = self._store.get(live_id)
+            if entry is None:
+                return None
+            if scene_index < 0 or scene_index >= len(entry["scenes"]):
+                return None
+            if entry["status"] in self.TERMINAL_STATUSES:
+                return None
+            entry["generation"] += 1
+            entry["requested_scene"] = scene_index
+            entry["rendering_scene"] = None
+            entry["status"] = "queued"
+            entry["updated_at"] = time.time()
+            entry["progress"] = {
+                "stage": "queued",
+                "message": f"Queued scene {scene_index + 1}/{len(entry['scenes'])}",
+                "current_scene": scene_index + 1,
+                "total_scenes": len(entry["scenes"]),
+                "percent": 0,
+            }
+            return entry["generation"]
+
+    def mark_rendering(
+        self, live_id: str, scene_index: int, generation: int, message: str
+    ) -> bool:
+        with self._lock:
+            entry = self._store.get(live_id)
+            if entry is None or entry["generation"] != generation:
+                return False
+            if entry["status"] in self.TERMINAL_STATUSES:
+                return False
+            entry["status"] = "running"
+            entry["rendering_scene"] = scene_index
+            entry["updated_at"] = time.time()
+            entry["progress"] = {
+                "stage": "rendering",
+                "message": message,
+                "current_scene": scene_index + 1,
+                "total_scenes": len(entry["scenes"]),
+                "scene_heading": entry["scenes"][scene_index]["heading"],
+                "percent": int((scene_index / max(len(entry["scenes"]), 1)) * 100),
+            }
+            return True
+
+    def store_scene(
+        self,
+        live_id: str,
+        scene_index: int,
+        generation: int,
+        audio_path: Path,
+        timing_blocks: list[TimingBlock],
+        duration: float,
+    ) -> bool:
+        with self._lock:
+            entry = self._store.get(live_id)
+            if entry is None or entry["generation"] != generation:
+                self._unlink(audio_path)
+                return False
+            if entry["status"] in self.TERMINAL_STATUSES:
+                self._unlink(audio_path)
+                return False
+            entry["ready_scenes"][scene_index] = {
+                "audio_path": audio_path,
+                "timing": [asdict(block) for block in timing_blocks],
+                "duration": duration,
+            }
+            entry["rendering_scene"] = None
+            entry["updated_at"] = time.time()
+            if scene_index >= len(entry["scenes"]) - 1:
+                entry["status"] = "complete"
+                entry["progress"] = {
+                    "stage": "complete",
+                    "message": "Live preview ready",
+                    "percent": 100,
+                }
+                self._controls.pop(live_id, None)
+            else:
+                entry["status"] = "running"
+                entry["progress"] = {
+                    "stage": "ready",
+                    "message": f"Scene {scene_index + 1} ready",
+                    "current_scene": scene_index + 1,
+                    "total_scenes": len(entry["scenes"]),
+                    "scene_heading": entry["scenes"][scene_index]["heading"],
+                    "percent": int(
+                        ((scene_index + 1) / max(len(entry["scenes"]), 1)) * 100
+                    ),
+                }
+            return True
+
+    def fail(self, live_id: str, error: str) -> None:
+        with self._lock:
+            entry = self._store.get(live_id)
+            if entry is None:
+                return
+            entry["status"] = "failed"
+            entry["updated_at"] = time.time()
+            entry["error"] = error
+            entry["progress"] = {
+                "stage": "failed",
+                "message": error,
+                "percent": entry.get("progress", {}).get("percent", 0),
+            }
+            self._controls.pop(live_id, None)
+
+    def request_cancel(self, live_id: str) -> bool:
+        with self._lock:
+            entry = self._store.get(live_id)
+            control = self._controls.get(live_id)
+            if entry is None or control is None:
+                return False
+            if entry["status"] in self.TERMINAL_STATUSES:
+                return False
+            control.cancel_event.set()
+            control.pause_event.clear()
+            entry["status"] = "cancelling"
+            entry["updated_at"] = time.time()
+            entry["progress"] = {
+                **entry.get("progress", {}),
+                "stage": "cancelling",
+                "message": "Cancelling live preview",
+            }
+            return True
+
+    def cancelled(self, live_id: str) -> None:
+        with self._lock:
+            entry = self._store.get(live_id)
+            if entry is None:
+                return
+            entry["status"] = "cancelled"
+            entry["updated_at"] = time.time()
+            entry["progress"] = {
+                **entry.get("progress", {}),
+                "stage": "cancelled",
+                "message": "Live preview cancelled",
+            }
+            self._controls.pop(live_id, None)
+
+    def _evict(self) -> None:
+        now = time.time()
+        expired = [
+            live_id
+            for live_id, entry in self._store.items()
+            if entry["status"] in self.TERMINAL_STATUSES
+            and now - entry.get("updated_at", entry["created_at"]) > self.TTL_SECONDS
+        ]
+        for live_id in expired:
+            self._remove(live_id)
+
+        if len(self._store) > self.MAX_ENTRIES:
+            by_age = sorted(
+                self._store.items(),
+                key=lambda x: x[1].get("updated_at", x[1]["created_at"]),
+            )
+            for live_id, _ in by_age[: len(self._store) - self.MAX_ENTRIES]:
+                self._remove(live_id)
+
+    def _remove(self, live_id: str) -> None:
+        entry = self._store.pop(live_id, None)
+        self._controls.pop(live_id, None)
+        if entry is None:
+            return
+        for result in entry["ready_scenes"].values():
+            self._unlink(result.get("audio_path"))
+
+    def _unlink(self, audio_path: object) -> None:
+        if isinstance(audio_path, Path) and audio_path.exists():
+            try:
+                audio_path.unlink()
+            except OSError:
+                pass
+
+
+live_render_store = LiveRenderStore()
+
+
 def get_script_text_from_request() -> str:
     """Get script text from textarea data or an uploaded file."""
     script_text = request.form.get("script", "").strip()
@@ -347,6 +620,39 @@ def build_download_name(name: str | None, audio_format: str) -> str:
     if not stem:
         stem = "drinkingfountain-render"
     return f"{stem}.{audio_format}"
+
+
+def scene_to_fountain(scene: Scene) -> str:
+    """Serialize a parsed scene back to the Fountain subset the renderer uses."""
+    lines = [scene.heading.content, ""]
+    for block in scene.blocks:
+        if isinstance(block, Dialogue):
+            lines.extend([block.character, block.content, ""])
+        elif isinstance(block, Action):
+            lines.extend([block.content, ""])
+    return "\n".join(lines).strip() + "\n"
+
+
+def make_renderer(config_obj: Config) -> RenderService:
+    """Build a render service with configured voices for web jobs."""
+    piper = PiperTTSBackend(max_text_length=500)
+    tts = CachedTTSBackend(piper)
+    if not tts.list_voices():
+        raise RuntimeError(
+            "No voice models installed. Use 'drinkingfountain voices download <voice_id>' to install one."
+        )
+
+    voice_mgr = VoiceManager(tts)
+    if config_obj.voices:
+        for character, voice in config_obj.voices.items():
+            voice_mgr.set_character_voice(character, voice)
+
+    return RenderService(
+        config=config_obj,
+        tts=tts,
+        voice_mgr=voice_mgr,
+        narrator_cfg=config_obj.narrator,
+    )
 
 
 def render_job(
@@ -379,24 +685,7 @@ def render_job(
                 "percent": 0,
             },
         )
-        piper = PiperTTSBackend(max_text_length=500)
-        tts = CachedTTSBackend(piper)
-        if not tts.list_voices():
-            raise RuntimeError(
-                "No voice models installed. Use 'drinkingfountain voices download <voice_id>' to install one."
-            )
-
-        voice_mgr = VoiceManager(tts)
-        if config_obj.voices:
-            for character, voice in config_obj.voices.items():
-                voice_mgr.set_character_voice(character, voice)
-
-        service = RenderService(
-            config=config_obj,
-            tts=tts,
-            voice_mgr=voice_mgr,
-            narrator_cfg=config_obj.narrator,
-        )
+        service = make_renderer(config_obj)
 
         result = service.render_from_string(
             script_text,
@@ -419,6 +708,78 @@ def render_job(
     except Exception as e:
         logger.exception("Render job failed")
         render_store.fail(render_id, str(e))
+
+
+def live_scene_job(
+    live_id: str,
+    scene_index: int,
+    generation: int,
+) -> None:
+    """Render one live preview scene and then queue one lookahead scene."""
+
+    def check_control() -> None:
+        control = live_render_store.get_control(live_id)
+        if control is None:
+            return
+        if control.cancel_event.is_set():
+            raise RenderCancelled("Live preview cancelled")
+
+    entry = live_render_store.get(live_id)
+    if entry is None:
+        return
+    if generation != entry["generation"]:
+        return
+
+    try:
+        scenes: list[dict[str, object]] = entry["scenes"]
+        message = f"Rendering scene {scene_index + 1}/{len(scenes)}"
+        if not live_render_store.mark_rendering(
+            live_id, scene_index, generation, message
+        ):
+            return
+
+        parser = FountainParser()
+        script_obj = parser.parse_string(entry["script_text"])
+        scene = script_obj.scenes[scene_index]
+        tmp = tempfile.NamedTemporaryFile(
+            delete=False, suffix=".wav", prefix=f"df_live_{live_id}_{scene_index}_"
+        )
+        tmp.close()
+        output_path = Path(tmp.name)
+        service = make_renderer(entry["config"])
+        result = service.render_from_string(
+            scene_to_fountain(scene),
+            output=str(output_path),
+            collect_timing=True,
+            title=entry["script_title"],
+            progress_callback=lambda progress: live_render_store.mark_rendering(
+                live_id,
+                scene_index,
+                generation,
+                str(progress.get("message") or message),
+            ),
+            control_callback=check_control,
+        )
+        stored = live_render_store.store_scene(
+            live_id=live_id,
+            scene_index=scene_index,
+            generation=generation,
+            audio_path=output_path,
+            timing_blocks=result.timing_blocks or [],
+            duration=result.duration,
+        )
+        if stored and scene_index + 1 < len(scenes):
+            next_entry = live_render_store.get(live_id)
+            if next_entry is not None and next_entry["generation"] == generation:
+                LIVE_EXECUTOR.submit(
+                    live_scene_job, live_id, scene_index + 1, generation
+                )
+    except RenderCancelled:
+        logger.info("Live preview cancelled: %s", live_id)
+        live_render_store.cancelled(live_id)
+    except Exception as e:
+        logger.exception("Live scene render failed")
+        live_render_store.fail(live_id, str(e))
 
 
 def build_config_from_form(form: dict) -> Config:
@@ -546,6 +907,8 @@ def register_routes(app: Flask) -> None:
         output_format = request.form.get("output_format", "wav")
         if output_format not in ("wav", "mp3"):
             output_format = "wav"
+        live_preview = request.form.get("live_preview") == "on"
+        create_download = request.form.get("create_download") == "on"
 
         try:
             config_obj = build_config_from_form(request.form)
@@ -554,6 +917,58 @@ def register_routes(app: Flask) -> None:
                 return jsonify({"error": "; ".join(errors)}), 400
         except (ValueError, TypeError) as e:
             return jsonify({"error": f"Invalid configuration: {e}"}), 400
+
+        if live_preview:
+            try:
+                parser = FountainParser()
+                script_obj = parser.parse_string(script_text)
+                if not script_obj.scenes:
+                    return jsonify({"error": "No scenes found in script."}), 400
+                if not any(
+                    isinstance(block, Dialogue)
+                    for scene in script_obj.scenes
+                    for block in scene.blocks
+                ):
+                    return jsonify({"error": "No dialogue found in script."}), 400
+                scenes: list[dict[str, object]] = [
+                    {
+                        "index": idx,
+                        "heading": scene.heading.content,
+                        "line_number": scene.heading.line_number,
+                    }
+                    for idx, scene in enumerate(script_obj.scenes)
+                ]
+            except Exception as e:
+                return jsonify({"error": str(e)}), 400
+
+            live_id = uuid.uuid4().hex[:12]
+            live_render_store.create(
+                live_id=live_id,
+                scenes=scenes,
+                script_title=script_obj.title or "Untitled",
+                script_text=script_text,
+                config_obj=config_obj,
+                output_format=output_format,
+                download_requested=create_download,
+            )
+            generation = live_render_store.request_scene(live_id, 0)
+            if generation is not None:
+                LIVE_EXECUTOR.submit(live_scene_job, live_id, 0, generation)
+            return jsonify(
+                {
+                    "status": "queued",
+                    "mode": "live",
+                    "live_id": live_id,
+                    "render_id": live_id,
+                    "progress_url": f"/live/{live_id}/state",
+                    "scenes": scenes,
+                    "script_title": script_obj.title or "Untitled",
+                    "download_requested": create_download,
+                }
+            ), 202
+
+        if not create_download:
+            return jsonify({"error": "Select live preview or create download."}), 400
 
         suffix = f".{output_format}"
         tmp = tempfile.NamedTemporaryFile(
@@ -624,9 +1039,45 @@ def register_routes(app: Flask) -> None:
 
     @app.route("/cancel/<render_id>", methods=["POST"])
     def cancel(render_id: str):  # type: ignore[no-untyped-def]
-        if not render_store.request_cancel(render_id):
+        if not render_store.request_cancel(render_id) and not (
+            live_render_store.request_cancel(render_id)
+        ):
             return jsonify({"error": "Render cannot be cancelled"}), 404
         return jsonify({"status": "cancelling", "render_id": render_id})
+
+    @app.route("/live/<live_id>/state")
+    def live_state(live_id: str):  # type: ignore[no-untyped-def]
+        snapshot = live_render_store.snapshot(live_id)
+        if snapshot is None:
+            return jsonify({"error": "Not found or expired"}), 404
+        return jsonify(snapshot)
+
+    @app.route("/live/<live_id>/play/<int:scene_index>", methods=["POST"])
+    def live_play(live_id: str, scene_index: int):  # type: ignore[no-untyped-def]
+        generation = live_render_store.request_scene(live_id, scene_index)
+        if generation is None:
+            return jsonify({"error": "Scene cannot be queued"}), 404
+        LIVE_EXECUTOR.submit(live_scene_job, live_id, scene_index, generation)
+        return jsonify(
+            {
+                "status": "queued",
+                "live_id": live_id,
+                "scene_index": scene_index,
+            }
+        )
+
+    @app.route("/live/<live_id>/scene/<int:scene_index>/audio")
+    def live_scene_audio(live_id: str, scene_index: int):  # type: ignore[no-untyped-def]
+        entry = live_render_store.get(live_id)
+        if entry is None:
+            return jsonify({"error": "Not found or expired"}), 404
+        result = entry["ready_scenes"].get(scene_index)
+        if result is None:
+            return jsonify({"error": "Scene audio not ready"}), 404
+        audio_path = result["audio_path"]
+        if not audio_path.exists():
+            return jsonify({"error": "Scene audio file not found"}), 404
+        return send_file(audio_path, mimetype="audio/wav")
 
     @app.route("/audio/<render_id>")
     def audio(render_id: str):  # type: ignore[no-untyped-def]

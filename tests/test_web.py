@@ -199,6 +199,7 @@ def test_render_endpoint_returns_urls(
         data={
             "script": "INT. ROOM - DAY\n\nJOHN\nHello.",
             "narrator_enabled": "",
+            "create_download": "on",
         },
     )
 
@@ -276,6 +277,7 @@ def test_render_endpoint_uses_uploaded_file(
         "/render",
         data={
             "script": "",
+            "create_download": "on",
             "script_file": (
                 BytesIO(uploaded_script.encode("utf-8")),
                 "uploaded.fountain",
@@ -286,6 +288,92 @@ def test_render_endpoint_uses_uploaded_file(
 
     assert response.status_code == 202
     assert captured["script_text"] == uploaded_script
+
+
+def test_live_preview_endpoint_returns_scene_audio(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    app = create_app()
+    app.config["TESTING"] = True
+
+    class FakeRenderService:
+        def __init__(
+            self,
+            config: object,
+            tts: object,
+            voice_mgr: object,
+            narrator_cfg: object,
+        ) -> None:
+            pass
+
+        def render_from_string(
+            self,
+            script_text: str,
+            output: str,
+            collect_timing: bool,
+            title: str | None = None,
+            progress_callback=None,
+            control_callback=None,
+        ) -> RenderResult:
+            Path(output).write_bytes(b"RIFF")
+            return RenderResult(
+                duration=0.5,
+                tts_calls=1,
+                script_title=title or "Live",
+                scene_count=1,
+                character_count=1,
+                dialogue_count=1,
+                timing=TimingMetrics(
+                    total_wall=0.1,
+                    parse_time=0.01,
+                    tts_time=0.02,
+                    tts_calls=1,
+                    output_time=0.03,
+                ),
+                output_path=Path(output),
+                timing_blocks=[
+                    TimingBlock(
+                        type="dialogue",
+                        text="Hello.",
+                        character="JOHN",
+                        start=0.0,
+                        end=0.5,
+                    )
+                ],
+            )
+
+    monkeypatch.setattr("drinkingfountain.web.app.PiperTTSBackend", FakeTTSBackend)
+    monkeypatch.setattr(
+        "drinkingfountain.web.app.CachedTTSBackend", lambda piper: piper
+    )
+    monkeypatch.setattr("drinkingfountain.web.app.RenderService", FakeRenderService)
+    monkeypatch.setattr("drinkingfountain.web.app.LIVE_EXECUTOR", InlineExecutor())
+    monkeypatch.setattr(
+        "drinkingfountain.web.app.tempfile.NamedTemporaryFile",
+        lambda delete, suffix, prefix: _TempFile(tmp_path / f"{prefix}live{suffix}"),
+    )
+
+    response = app.test_client().post(
+        "/render",
+        data={
+            "script": "INT. ONE - DAY\n\nJOHN\nHello.\n\nINT. TWO - DAY\n\nMARY\nHi.",
+            "live_preview": "on",
+        },
+    )
+
+    assert response.status_code == 202
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["mode"] == "live"
+    state_response = app.test_client().get(payload["progress_url"])
+    state_payload = state_response.get_json()
+    assert state_payload is not None
+    assert state_payload["status"] == "complete"
+    assert sorted(state_payload["ready_scenes"]) == ["0", "1"]
+    audio_response = app.test_client().get(
+        state_payload["ready_scenes"]["0"]["audio_url"]
+    )
+    assert audio_response.status_code == 200
 
 
 def test_script_info_uses_parser_and_voice_manager(
@@ -383,7 +471,7 @@ def test_render_endpoint_removes_temp_file_when_no_voices(
 
     response = app.test_client().post(
         "/render",
-        data={"script": "INT. ROOM - DAY\n\nJOHN\nHello."},
+        data={"script": "INT. ROOM - DAY\n\nJOHN\nHello.", "create_download": "on"},
     )
 
     assert response.status_code == 202
