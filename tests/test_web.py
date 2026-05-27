@@ -220,6 +220,43 @@ def test_render_endpoint_uses_uploaded_file(
     assert captured["script_text"] == uploaded_script
 
 
+def test_script_info_uses_parser_and_voice_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app()
+    app.config["TESTING"] = True
+    monkeypatch.setattr("drinkingfountain.web.app.PiperTTSBackend", FakeTTSBackend)
+    monkeypatch.setattr(
+        "drinkingfountain.voices.manager.random.choice",
+        lambda voices: voices[0],
+    )
+
+    response = app.test_client().post(
+        "/api/script-info",
+        data={
+            "script": "INT. ROOM - DAY\n\nJOHN\nHello.\n\nMARY\nHi.",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["characters"] == ["JOHN", "MARY"]
+    assert payload["scene_count"] == 1
+    assert payload["voices"] == ["voice1", "voice2"]
+    assert payload["assignments"] == {"JOHN": "voice1", "MARY": "voice1"}
+
+
+def test_script_info_rejects_empty_script() -> None:
+    app = create_app()
+    app.config["TESTING"] = True
+
+    response = app.test_client().post("/api/script-info", data={"script": ""})
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "No script provided."}
+
+
 def test_render_endpoint_removes_temp_file_when_no_voices(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

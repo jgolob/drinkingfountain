@@ -319,10 +319,19 @@ body.app-shell {
 
 .voice-override-row {
     display: grid;
-    grid-template-columns: minmax(120px, 0.9fr) minmax(160px, 1.1fr) 90px;
+    grid-template-columns: minmax(120px, 0.9fr) minmax(160px, 1.1fr) 94px;
     gap: 10px;
     align-items: center;
     margin-bottom: 10px;
+}
+
+.voice-map-empty {
+    padding: 14px;
+    border: 1px dashed #cfc5b6;
+    border-radius: 8px;
+    background: var(--panel-strong);
+    color: var(--muted);
+    font-size: 0.9rem;
 }
 
 .voice-override-row .remove-override {

@@ -12,12 +12,14 @@ document.addEventListener('DOMContentLoaded', function () {
     const audioPlayer = document.getElementById('audio-player');
     const narratorVoiceSelect = document.getElementById('narrator-voice-select');
     const voiceOverrides = document.getElementById('voice-overrides');
+    const voiceMapEmpty = document.getElementById('voice-map-empty');
     const addVoiceOverrideBtn = document.getElementById('add-voice-override');
     const scriptInput = document.getElementById('script');
     const scriptFileInput = document.getElementById('script_file');
 
     let availableVoices = [];
     let overrideCount = 0;
+    let scriptInfoTimer = null;
 
     // Load voices on page load
     fetch('/api/voices')
@@ -30,8 +32,17 @@ document.addEventListener('DOMContentLoaded', function () {
                 opt.textContent = v;
                 narratorVoiceSelect.appendChild(opt);
             });
+            refreshScriptInfo();
         })
         .catch(() => {});
+
+    scriptInput.addEventListener('input', function () {
+        scheduleScriptInfoRefresh();
+    });
+
+    narratorVoiceSelect.addEventListener('change', function () {
+        refreshScriptInfo();
+    });
 
     scriptFileInput.addEventListener('change', function () {
         errorDisplay.classList.add('d-none');
@@ -41,6 +52,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const reader = new FileReader();
         reader.onload = function () {
             scriptInput.value = String(reader.result || '');
+            refreshScriptInfo();
         };
         reader.onerror = function () {
             errorDisplay.textContent = 'Could not read the selected script file.';
@@ -52,26 +64,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Voice override management
     addVoiceOverrideBtn.addEventListener('click', function () {
-        overrideCount++;
-        const row = document.createElement('div');
-        row.className = 'voice-override-row';
-        row.innerHTML =
-            '<div>' +
-            '<input type="text" class="form-control" name="voice_char_' + overrideCount + '" placeholder="Character name">' +
-            '</div>' +
-            '<div>' +
-            '<select class="form-select" name="voice_id_' + overrideCount + '">' +
-            '<option value="">Select voice...</option>' +
-            availableVoices.map(function (v) { return '<option value="' + v + '">' + v + '</option>'; }).join('') +
-            '</select>' +
-            '</div>' +
-            '<div>' +
-            '<button type="button" class="btn btn-outline-danger remove-override">Remove</button>' +
-            '</div>';
-        voiceOverrides.appendChild(row);
-        row.querySelector('.remove-override').addEventListener('click', function () {
-            row.remove();
-        });
+        addVoiceOverrideRow('', '');
     });
 
     // Form submission
@@ -201,5 +194,101 @@ document.addEventListener('DOMContentLoaded', function () {
         var div = document.createElement('div');
         div.appendChild(document.createTextNode(text));
         return div.innerHTML;
+    }
+
+    function scheduleScriptInfoRefresh() {
+        window.clearTimeout(scriptInfoTimer);
+        scriptInfoTimer = window.setTimeout(refreshScriptInfo, 450);
+    }
+
+    function refreshScriptInfo() {
+        const scriptText = scriptInput.value.trim();
+        if (!scriptText) {
+            setVoiceMapEmpty('Add a script to populate characters and suggested voices.');
+            return;
+        }
+
+        const existing = collectVoiceOverrides();
+        const formData = new FormData();
+        formData.append('script', scriptInput.value);
+        formData.append('narrator_voice', narratorVoiceSelect.value || '');
+
+        fetch('/api/script-info', { method: 'POST', body: formData })
+            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+            .then(function (resp) {
+                if (!resp.ok || resp.data.error) {
+                    setVoiceMapEmpty(resp.data.error || 'Could not parse characters.');
+                    return;
+                }
+                populateVoiceOverrides(resp.data.characters || [], resp.data.assignments || {}, existing);
+            })
+            .catch(function () {
+                setVoiceMapEmpty('Could not parse characters.');
+            });
+    }
+
+    function populateVoiceOverrides(characters, assignments, existing) {
+        voiceOverrides.innerHTML = '';
+        overrideCount = 0;
+
+        if (!characters.length) {
+            setVoiceMapEmpty('No dialogue characters found yet.');
+            return;
+        }
+
+        voiceMapEmpty.classList.add('d-none');
+        characters.forEach(function (character) {
+            addVoiceOverrideRow(character, existing[character] || assignments[character] || '');
+        });
+    }
+
+    function addVoiceOverrideRow(character, selectedVoice) {
+        overrideCount++;
+        const row = document.createElement('div');
+        row.className = 'voice-override-row';
+        row.innerHTML =
+            '<div>' +
+            '<input type="text" class="form-control" name="voice_char_' + overrideCount + '" placeholder="Character name" value="' + escapeHtml(character) + '">' +
+            '</div>' +
+            '<div>' +
+            '<select class="form-select" name="voice_id_' + overrideCount + '">' +
+            '<option value="">Select voice...</option>' +
+            availableVoices.map(function (v) {
+                var selected = v === selectedVoice ? ' selected' : '';
+                return '<option value="' + escapeHtml(v) + '"' + selected + '>' + escapeHtml(v) + '</option>';
+            }).join('') +
+            '</select>' +
+            '</div>' +
+            '<div>' +
+            '<button type="button" class="btn btn-outline-danger remove-override">Remove</button>' +
+            '</div>';
+        voiceOverrides.appendChild(row);
+        row.querySelector('.remove-override').addEventListener('click', function () {
+            row.remove();
+            if (!voiceOverrides.children.length) {
+                setVoiceMapEmpty('No character voice overrides configured.');
+            }
+        });
+    }
+
+    function collectVoiceOverrides() {
+        const existing = {};
+        voiceOverrides.querySelectorAll('.voice-override-row').forEach(function (row) {
+            const characterInput = row.querySelector('input[name^="voice_char_"]');
+            const voiceSelect = row.querySelector('select[name^="voice_id_"]');
+            const character = characterInput ? characterInput.value.trim() : '';
+            const voice = voiceSelect ? voiceSelect.value.trim() : '';
+            if (character && voice) {
+                existing[character] = voice;
+            }
+        });
+        return existing;
+    }
+
+    function setVoiceMapEmpty(message) {
+        voiceOverrides.innerHTML = '';
+        overrideCount = 0;
+        voiceMapEmpty.textContent = message;
+        voiceMapEmpty.classList.remove('d-none');
     }
 });

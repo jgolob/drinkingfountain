@@ -15,6 +15,7 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request, send_file
 
 from drinkingfountain.config import Config
+from drinkingfountain.parser.fountain import FountainParser
 from drinkingfountain.services import RenderService, TimingBlock, VoiceService
 from drinkingfountain.tts import CachedTTSBackend, PiperTTSBackend
 from drinkingfountain.voices import VoiceManager
@@ -101,6 +102,15 @@ class RenderStore:
 render_store = RenderStore()
 
 
+def get_script_text_from_request() -> str:
+    """Get script text from textarea data or an uploaded file."""
+    script_text = request.form.get("script", "").strip()
+    uploaded = request.files.get("script_file")
+    if uploaded and uploaded.filename:
+        script_text = uploaded.read().decode("utf-8", errors="replace").strip()
+    return script_text
+
+
 def build_config_from_form(form: dict) -> Config:
     """Build a Config object from form data, using defaults for missing fields."""
     data: dict = {}
@@ -179,14 +189,47 @@ def register_routes(app: Flask) -> None:
         except Exception as e:
             return jsonify({"voices": [], "error": str(e)})
 
+    @app.route("/api/script-info", methods=["POST"])
+    def script_info():  # type: ignore[no-untyped-def]
+        script_text = get_script_text_from_request()
+        if not script_text:
+            return jsonify({"error": "No script provided."}), 400
+
+        try:
+            parser = FountainParser()
+            script_obj = parser.parse_string(script_text)
+            characters = sorted(script_obj.characters)
+
+            piper = PiperTTSBackend(max_text_length=500)
+            voice_mgr = VoiceManager(piper)
+            narrator_voice = request.form.get("narrator_voice", "").strip()
+            if narrator_voice:
+                voice_mgr.set_narrator_voice(narrator_voice)
+
+            voices = sorted(piper.list_voices())
+            assignments: dict[str, str] = {}
+            for character in characters:
+                try:
+                    assignments[character] = voice_mgr.get_voice_for_character(
+                        character
+                    )
+                except (RuntimeError, ValueError):
+                    assignments[character] = ""
+
+            return jsonify(
+                {
+                    "characters": characters,
+                    "voices": voices,
+                    "assignments": assignments,
+                    "scene_count": len(script_obj.scenes),
+                }
+            )
+        except Exception as e:
+            return jsonify({"error": str(e)}), 400
+
     @app.route("/render", methods=["POST"])
     def render():  # type: ignore[no-untyped-def]
-        # Get script text from textarea or uploaded file
-        script_text = request.form.get("script", "").strip()
-        uploaded = request.files.get("script_file")
-        if uploaded and uploaded.filename:
-            script_text = uploaded.read().decode("utf-8", errors="replace").strip()
-
+        script_text = get_script_text_from_request()
         if not script_text:
             return jsonify({"error": "No script provided."}), 400
 
