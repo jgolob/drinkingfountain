@@ -189,6 +189,18 @@ class Config:
         return cls._from_dict(data)
 
     @classmethod
+    def from_dict(cls, data: dict) -> "Config":
+        """Create Config from a dictionary (e.g., from web form data).
+
+        Args:
+            data: Dictionary containing configuration values
+
+        Returns:
+            Config object with values from dictionary
+        """
+        return cls._from_dict(data)
+
+    @classmethod
     def _find_config(cls) -> Path | None:
         """Search for configuration file in standard locations.
 

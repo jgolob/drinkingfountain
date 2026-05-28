@@ -224,6 +224,57 @@ voices:
             assert mock_tts_instance.calls[1] == ("Hello, world.", "voice1")
             assert mock_tts_instance.calls[2] == ("Hi there.", "voice2")
 
+    def test_render_with_title_page_and_emphasized_character(
+        self,
+        runner: CliRunner,
+        patched_piper,
+        mock_tts_instance,
+    ):
+        """Test CLI render accepts title-page metadata and Markdown character cues."""
+        script_content = """Title: FISSION EPISODE 101
+Credit: written by
+Author: Jonathan Golob
+Notes:
+The world's most dangerous technology. A disaster.
+About the Author:
+Jonathan Golob lives in Seattle.
+Revision: 2026-03-24
+
+# ACT I
+
+.INT. FUKUSHIMA DAIICHI - CENTRAL CONTROL ROOM - DAY
+
+CLAIRE
+Welcome to the central control room.
+
+**AUTOMATED VOICE**
+(OVER SPEAKERS)
+_Tri-tone alert._
+This is an Earthquake Early Warning.
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "fission.fountain"
+            output_path = Path(tmpdir) / "output.wav"
+            script_path.write_text(script_content)
+
+            result = runner.invoke(
+                cli, ["render", str(script_path), "-o", str(output_path)]
+            )
+
+            assert result.exit_code == 0, (
+                f"Command failed with output: {result.output}\n"
+                f"Exception: {result.exception}"
+            )
+            assert output_path.exists()
+            assert "Render complete!" in result.output
+
+            spoken_text = [text for text, _voice in mock_tts_instance.calls]
+            assert "Welcome to the central control room." in spoken_text
+            assert (
+                "_Tri-tone alert._\nThis is an Earthquake Early Warning." in spoken_text
+            )
+            assert all("FISSION EPISODE 101" not in text for text in spoken_text)
+
     def test_render_with_voices_dir(
         self,
         runner: CliRunner,

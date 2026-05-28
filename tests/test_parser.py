@@ -57,6 +57,27 @@ Hi, John.
     assert script.characters == {"JOHN", "MARY"}
 
 
+def test_parse_string_resets_line_numbers(parser: FountainParser) -> None:
+    """Test that parse_string can safely reuse a parser instance."""
+    first = parser.parse_string(
+        """INT. ROOM - DAY
+
+JOHN
+Hello.
+"""
+    )
+    second = parser.parse_string(
+        """EXT. STREET - NIGHT
+
+MARY
+Hi.
+"""
+    )
+
+    assert first.scenes[0].heading.line_number == 1
+    assert second.scenes[0].heading.line_number == 1
+
+
 def test_parse_with_parentheticals(parser: FountainParser, tmp_path: Path) -> None:
     """Test parsing dialogue with parentheticals."""
     script_file = tmp_path / "test.fountain"
@@ -393,6 +414,76 @@ Yippie ki-yay!
     assert isinstance(dialogue, Dialogue)
     assert dialogue.character == "McCLANE"
     assert dialogue.content == "Yippie ki-yay!"
+
+
+def test_markdown_emphasized_character(parser: FountainParser, tmp_path: Path) -> None:
+    """Test that bold Markdown character cues are parsed as dialogue."""
+    script_file = tmp_path / "test.fountain"
+    script_file.write_text(
+        """INT. CONTROL ROOM - DAY
+
+**AUTOMATED VOICE**
+(OVER SPEAKERS)
+_Tri-tone alert._
+This is an Earthquake Early Warning.
+"""
+    )
+
+    script = parser.parse(script_file)
+
+    assert script.characters == {"AUTOMATED VOICE"}
+    dialogue = script.scenes[0].blocks[0]
+    assert isinstance(dialogue, Dialogue)
+    assert dialogue.character == "AUTOMATED VOICE"
+    assert dialogue.content == "_Tri-tone alert._\nThis is an Earthquake Early Warning."
+    assert dialogue.parentheticals[0].text == "OVER SPEAKERS"
+
+
+def test_title_page_metadata_before_forced_scene(
+    parser: FountainParser, tmp_path: Path
+) -> None:
+    """Test that Fountain title-page metadata does not become a render scene."""
+    script_file = tmp_path / "fission.fountain"
+    script_file.write_text(
+        """Title: FISSION EPISODE 101
+Credit: written by
+Author: Jonathan Golob
+Copyright: (c) 2026 Jonathan Golob
+Notes:
+The world's most dangerous technology. A disaster.
+About the Author:
+Jonathan Golob lives in Seattle.
+Revision: 2026-03-24
+
+# ACT I
+
+.INT. FUKUSHIMA DAIICHI - UNITS 1 & 2 CENTRAL CONTROL ROOM - DAY
+
+CLAIRE
+Welcome to the central control room.
+
+**AUTOMATED VOICE**
+(OVER SPEAKERS)
+_Tri-tone alert._
+This is an Earthquake Early Warning.
+"""
+    )
+
+    script = parser.parse(script_file)
+
+    assert len(script.scenes) == 1
+    assert script.scenes[0].heading.content == (
+        "INT. FUKUSHIMA DAIICHI - UNITS 1 & 2 CENTRAL CONTROL ROOM - DAY"
+    )
+    assert script.characters == {"CLAIRE", "AUTOMATED VOICE"}
+
+    dialogue_blocks = [
+        block for block in script.scenes[0].blocks if isinstance(block, Dialogue)
+    ]
+    assert [block.character for block in dialogue_blocks] == [
+        "CLAIRE",
+        "AUTOMATED VOICE",
+    ]
 
 
 def test_forced_action(parser: FountainParser, tmp_path: Path) -> None:

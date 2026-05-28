@@ -8,10 +8,12 @@ The parser implements a state machine based on the official Fountain specificati
 """
 
 import re
+from collections.abc import Iterable
 from pathlib import Path
 
 from .script import (
     Action,
+    Block,
     Dialogue,
     Parenthetical,
     Scene,
@@ -51,6 +53,12 @@ class FountainParser:
     PARENTHETICAL_PATTERN = re.compile(r"^\([^)]+\)$")
     # Forced action: line starts with !
     FORCED_ACTION_PATTERN = re.compile(r"^!")
+    # Fountain title page metadata before the first scene.
+    TITLE_PAGE_KEY_PATTERN = re.compile(
+        r"^(title|credit|author|authors|source|draft date|date|contact|copyright|"
+        r"notes?|revision|revisions|about the author)\s*:",
+        re.IGNORECASE,
+    )
 
     def __init__(self) -> None:
         self.line_number = 0
@@ -70,227 +78,115 @@ class FountainParser:
         if not file_path.exists():
             raise FileNotFoundError(f"Script file not found: {file_path}")
 
+        self.line_number = 0
         script = Script(title=file_path.stem)
+        with open(file_path, encoding="utf-8") as f:
+            return self._parse_lines(f, script)
+
+    def parse_string(self, text: str, title: str | None = None) -> Script:
+        """Parse Fountain text from a string.
+
+        Args:
+            text: Fountain-format screenplay text.
+            title: Optional title for the script.
+
+        Returns:
+            A Script object representing the parsed screenplay.
+        """
+        self.line_number = 0
+        script = Script(title=title)
+        return self._parse_lines(text.splitlines(keepends=True), script)
+
+    def _parse_lines(self, lines: Iterable[str], script: Script) -> Script:
+        """Core line-processing state machine.
+
+        Args:
+            lines: Iterable of raw lines (with newlines).
+            script: Script object to populate.
+
+        Returns:
+            The populated Script object.
+        """
         current_scene: Scene | None = None
         current_character: str | None = None
         dialogue_lines: list[str] = []
         parentheticals: list[Parenthetical] = []
         prev_line_blank = True
         in_boneyard = False
+        in_title_page_value = False
 
-        with open(file_path, encoding="utf-8") as f:
-            for raw_line in f:
-                self.line_number += 1
-                line = raw_line.rstrip("\n\r")  # keep all spaces except newline
-                # Remove inline notes [[...]] from the line
-                clean_line = re.sub(r"\[\[.*?\]\]", "", line)
+        for raw_line in lines:
+            self.line_number += 1
+            line = raw_line.rstrip("\n\r")  # keep all spaces except newline
+            # Remove inline notes [[...]] from the line
+            clean_line = re.sub(r"\[\[.*?\]\]", "", line)
 
-                # After cleaning, check if line is effectively blank
-                if clean_line.strip() == "":
-                    # Treat as blank line
-                    prev_line_blank = True
-                    if current_character and dialogue_lines:
-                        self._flush_dialogue(
-                            script,
-                            current_scene,
-                            current_character,
-                            dialogue_lines,
-                            parentheticals,
-                        )
-                        current_character = None
-                        dialogue_lines = []
-                        parentheticals = []
-                    continue
-
-                # At this point, clean_line is non-blank after note removal
-                stripped = clean_line.strip()
-
-                # Check for boneyard (skip lines)
-                if in_boneyard:
-                    if "*/" in clean_line:
-                        in_boneyard = False
-                    continue
-                if "/*" in clean_line:
-                    if "*/" in clean_line:
-                        # single-line boneyard, skip this line
-                        continue
-                    else:
-                        in_boneyard = True
-                        continue
-
-                # Check for sections (#) and synopses (=) - ignore completely
-                if stripped.startswith("#") or stripped.startswith("="):
-                    continue
-
-                # Check for page break (=== or more)
-                if re.fullmatch(r"={3,}", stripped):
-                    continue
-
-                # Check for centered text (>...<) - treat as action
-                if stripped.startswith(">") and stripped.endswith("<"):
-                    content = stripped[1:-1].strip()
-                    block = Action(self.line_number, content)
-                    self._flush_dialogue_if_needed(
+            # After cleaning, check if line is effectively blank
+            if clean_line.strip() == "":
+                # Treat as blank line
+                prev_line_blank = True
+                in_title_page_value = False
+                if current_character and dialogue_lines:
+                    self._flush_dialogue(
                         script,
                         current_scene,
                         current_character,
                         dialogue_lines,
                         parentheticals,
                     )
-                    if current_scene is None:
-                        heading = SceneHeading(self.line_number, "", "UNKNOWN")
-                        current_scene = script.add_block(heading, current_scene)
-                    assert current_scene is not None
-                    current_scene.blocks.append(block)
                     current_character = None
-                    prev_line_blank = False
-                    continue
-
-                # Check for lyrics (~) - treat as action with tilde removed
-                if stripped.startswith("~"):
-                    content = stripped[1:].strip()
-                    block = Action(self.line_number, content)
-                    self._flush_dialogue_if_needed(
-                        script,
-                        current_scene,
-                        current_character,
-                        dialogue_lines,
-                        parentheticals,
-                    )
-                    if current_scene is None:
-                        heading = SceneHeading(self.line_number, "", "UNKNOWN")
-                        current_scene = script.add_block(heading, current_scene)
-                    assert current_scene is not None
-                    current_scene.blocks.append(block)
-                    current_character = None
-                    prev_line_blank = False
-                    continue
-
-                # 1. Check for scene heading (requires prev_line_blank)
-                if prev_line_blank and (
-                    self._is_scene_heading(stripped)
-                    or self.FORCED_SCENE_PATTERN.match(stripped)
-                ):
-                    # Remove forced dot if present for content and parsing
-                    if stripped.startswith("."):
-                        cleaned = stripped[1:].strip()
-                    else:
-                        cleaned = stripped
-                    location, time_part = self._parse_scene_heading(cleaned)
-                    block = SceneHeading(self.line_number, cleaned, location, time_part)
-                    self._flush_dialogue_if_needed(
-                        script,
-                        current_scene,
-                        current_character,
-                        dialogue_lines,
-                        parentheticals,
-                    )
-                    current_scene = script.add_block(block, current_scene)
-                    current_character = None
-                    prev_line_blank = False
-                    continue
-
-                # 2. Check for transition (requires prev_line_blank)
-                if prev_line_blank and (
-                    self._is_transition(stripped)
-                    or self.FORCED_TRANSITION_PATTERN.match(stripped)
-                ):
-                    content = (
-                        stripped[1:].strip() if stripped.startswith(">") else stripped
-                    )
-                    block = Transition(self.line_number, content)
-                    self._flush_dialogue_if_needed(
-                        script,
-                        current_scene,
-                        current_character,
-                        dialogue_lines,
-                        parentheticals,
-                    )
-                    if current_scene is None:
-                        heading = SceneHeading(self.line_number, "", "UNKNOWN")
-                        current_scene = script.add_block(heading, current_scene)
-                    assert current_scene is not None
-                    current_scene.blocks.append(block)
-                    current_character = None
-                    prev_line_blank = False
-                    continue
-
-                # 3. Check for character (requires prev_line_blank)
-                if prev_line_blank and (
-                    self._is_character(stripped)
-                    or self.FORCED_CHARACTER_PATTERN.match(stripped)
-                ):
-                    name = self._clean_character_name(stripped)
-                    self._flush_dialogue_if_needed(
-                        script,
-                        current_scene,
-                        current_character,
-                        dialogue_lines,
-                        parentheticals,
-                    )
-                    current_character = name
                     dialogue_lines = []
                     parentheticals = []
-                    prev_line_blank = False
+                continue
+
+            # At this point, clean_line is non-blank after note removal
+            stripped = clean_line.strip()
+
+            # Check for boneyard (skip lines)
+            if in_boneyard:
+                if "*/" in clean_line:
+                    in_boneyard = False
+                continue
+            if "/*" in clean_line:
+                if "*/" in clean_line:
+                    # single-line boneyard, skip this line
                     continue
-
-                # 4. If in dialogue context, check for parenthetical
-                if current_character is not None and self._is_parenthetical(stripped):
-                    text = stripped.strip("()")
-                    parentheticals.append(Parenthetical(self.line_number, text))
-                    prev_line_blank = False
-                    continue
-
-                # 5. If in dialogue context, handle potential structural lines that lack blank
-                if current_character is not None:
-                    # If this line is a scene heading or transition (including forced) but prev_line_blank is False,
-                    # it should end the dialogue and be treated as action.
-                    if (
-                        self._is_scene_heading(stripped)
-                        or self._is_transition(stripped)
-                        or self.FORCED_SCENE_PATTERN.match(stripped)
-                        or self.FORCED_TRANSITION_PATTERN.match(stripped)
-                    ):
-                        # Flush current dialogue
-                        self._flush_dialogue(
-                            script,
-                            current_scene,
-                            current_character,
-                            dialogue_lines,
-                            parentheticals,
-                        )
-                        current_character = None
-                        dialogue_lines = []
-                        parentheticals = []
-                        # Treat this line as action (forced scene/transition become action without their markers)
-                        if self.FORCED_SCENE_PATTERN.match(stripped):
-                            content = stripped[1:].strip()
-                        elif self.FORCED_TRANSITION_PATTERN.match(stripped):
-                            content = stripped[1:].strip()
-                        else:
-                            content = stripped
-                        block = Action(self.line_number, content)
-                        if current_scene is None:
-                            heading = SceneHeading(self.line_number, "", "UNKNOWN")
-                            current_scene = script.add_block(heading, current_scene)
-                        assert current_scene is not None
-                        current_scene.blocks.append(block)
-                        prev_line_blank = False
-                        continue
-                    else:
-                        # Normal dialogue line
-                        dialogue_lines.append(stripped)
-                        prev_line_blank = False
-                        continue
-
-                # 6. Not in dialogue: this is an Action (or forced action)
-                if self.FORCED_ACTION_PATTERN.match(stripped):
-                    content = stripped[1:].strip()
-                    block = Action(self.line_number, content)
                 else:
-                    # Use clean_line to preserve leading whitespace (but without notes)
-                    block = Action(self.line_number, clean_line)
+                    in_boneyard = True
+                    continue
 
+            if current_scene is None and self._is_title_page_key(stripped):
+                in_title_page_value = True
+                prev_line_blank = False
+                continue
+
+            if (
+                current_scene is None
+                and in_title_page_value
+                and not (
+                    prev_line_blank
+                    and (
+                        self._is_scene_heading(stripped)
+                        or self.FORCED_SCENE_PATTERN.match(stripped)
+                    )
+                )
+            ):
+                prev_line_blank = False
+                continue
+
+            # Check for sections (#) and synopses (=) - ignore completely
+            if stripped.startswith("#") or stripped.startswith("="):
+                in_title_page_value = False
+                continue
+
+            # Check for page break (=== or more)
+            if re.fullmatch(r"={3,}", stripped):
+                continue
+
+            # Check for centered text (>...<) - treat as action
+            if stripped.startswith(">") and stripped.endswith("<"):
+                content = stripped[1:-1].strip()
+                block: Block = Action(self.line_number, content)
                 self._flush_dialogue_if_needed(
                     script,
                     current_scene,
@@ -305,6 +201,166 @@ class FountainParser:
                 current_scene.blocks.append(block)
                 current_character = None
                 prev_line_blank = False
+                continue
+
+            # Check for lyrics (~) - treat as action with tilde removed
+            if stripped.startswith("~"):
+                content = stripped[1:].strip()
+                block = Action(self.line_number, content)
+                self._flush_dialogue_if_needed(
+                    script,
+                    current_scene,
+                    current_character,
+                    dialogue_lines,
+                    parentheticals,
+                )
+                if current_scene is None:
+                    heading = SceneHeading(self.line_number, "", "UNKNOWN")
+                    current_scene = script.add_block(heading, current_scene)
+                assert current_scene is not None
+                current_scene.blocks.append(block)
+                current_character = None
+                prev_line_blank = False
+                continue
+
+            # 1. Check for scene heading (requires prev_line_blank)
+            if prev_line_blank and (
+                self._is_scene_heading(stripped)
+                or self.FORCED_SCENE_PATTERN.match(stripped)
+            ):
+                in_title_page_value = False
+                # Remove forced dot if present for content and parsing
+                if stripped.startswith("."):
+                    cleaned = stripped[1:].strip()
+                else:
+                    cleaned = stripped
+                location, time_part = self._parse_scene_heading(cleaned)
+                block = SceneHeading(self.line_number, cleaned, location, time_part)
+                self._flush_dialogue_if_needed(
+                    script,
+                    current_scene,
+                    current_character,
+                    dialogue_lines,
+                    parentheticals,
+                )
+                current_scene = script.add_block(block, current_scene)
+                current_character = None
+                prev_line_blank = False
+                continue
+
+            # 2. Check for transition (requires prev_line_blank)
+            if prev_line_blank and (
+                self._is_transition(stripped)
+                or self.FORCED_TRANSITION_PATTERN.match(stripped)
+            ):
+                content = stripped[1:].strip() if stripped.startswith(">") else stripped
+                block = Transition(self.line_number, content)
+                self._flush_dialogue_if_needed(
+                    script,
+                    current_scene,
+                    current_character,
+                    dialogue_lines,
+                    parentheticals,
+                )
+                if current_scene is None:
+                    heading = SceneHeading(self.line_number, "", "UNKNOWN")
+                    current_scene = script.add_block(heading, current_scene)
+                assert current_scene is not None
+                current_scene.blocks.append(block)
+                current_character = None
+                prev_line_blank = False
+                continue
+
+            # 3. Check for character (requires prev_line_blank)
+            if prev_line_blank and (
+                self._is_character(stripped)
+                or self.FORCED_CHARACTER_PATTERN.match(stripped)
+            ):
+                name = self._clean_character_name(stripped)
+                self._flush_dialogue_if_needed(
+                    script,
+                    current_scene,
+                    current_character,
+                    dialogue_lines,
+                    parentheticals,
+                )
+                current_character = name
+                dialogue_lines = []
+                parentheticals = []
+                prev_line_blank = False
+                continue
+
+            # 4. If in dialogue context, check for parenthetical
+            if current_character is not None and self._is_parenthetical(stripped):
+                text = stripped.strip("()")
+                parentheticals.append(Parenthetical(self.line_number, text))
+                prev_line_blank = False
+                continue
+
+            # 5. If in dialogue context, handle potential structural lines that lack blank
+            if current_character is not None:
+                # If this line is a scene heading or transition (including forced) but prev_line_blank is False,
+                # it should end the dialogue and be treated as action.
+                if (
+                    self._is_scene_heading(stripped)
+                    or self._is_transition(stripped)
+                    or self.FORCED_SCENE_PATTERN.match(stripped)
+                    or self.FORCED_TRANSITION_PATTERN.match(stripped)
+                ):
+                    # Flush current dialogue
+                    self._flush_dialogue(
+                        script,
+                        current_scene,
+                        current_character,
+                        dialogue_lines,
+                        parentheticals,
+                    )
+                    current_character = None
+                    dialogue_lines = []
+                    parentheticals = []
+                    # Treat this line as action (forced scene/transition become action without their markers)
+                    if self.FORCED_SCENE_PATTERN.match(stripped):
+                        content = stripped[1:].strip()
+                    elif self.FORCED_TRANSITION_PATTERN.match(stripped):
+                        content = stripped[1:].strip()
+                    else:
+                        content = stripped
+                    block = Action(self.line_number, content)
+                    if current_scene is None:
+                        heading = SceneHeading(self.line_number, "", "UNKNOWN")
+                        current_scene = script.add_block(heading, current_scene)
+                    assert current_scene is not None
+                    current_scene.blocks.append(block)
+                    prev_line_blank = False
+                    continue
+                else:
+                    # Normal dialogue line
+                    dialogue_lines.append(stripped)
+                    prev_line_blank = False
+                    continue
+
+            # 6. Not in dialogue: this is an Action (or forced action)
+            if self.FORCED_ACTION_PATTERN.match(stripped):
+                content = stripped[1:].strip()
+                block = Action(self.line_number, content)
+            else:
+                # Use clean_line to preserve leading whitespace (but without notes)
+                block = Action(self.line_number, clean_line)
+
+            self._flush_dialogue_if_needed(
+                script,
+                current_scene,
+                current_character,
+                dialogue_lines,
+                parentheticals,
+            )
+            if current_scene is None:
+                heading = SceneHeading(self.line_number, "", "UNKNOWN")
+                current_scene = script.add_block(heading, current_scene)
+            assert current_scene is not None
+            current_scene.blocks.append(block)
+            current_character = None
+            prev_line_blank = False
 
         # After loop: flush any remaining dialogue
         if current_character and dialogue_lines:
@@ -340,6 +396,7 @@ class FountainParser:
         """Check if line is a character name."""
         if not line:
             return False
+        line = self._strip_full_line_emphasis(line)
         # Forced characters are handled separately; return False for them here.
         # Strip any trailing parenthetical (e.g., "JOHN (O.S.)" -> "JOHN")
         name = line
@@ -372,10 +429,15 @@ class FountainParser:
             return False
         return self.PARENTHETICAL_PATTERN.fullmatch(line) is not None
 
+    def _is_title_page_key(self, line: str) -> bool:
+        """Check if a line is a Fountain title-page metadata key."""
+        return self.TITLE_PAGE_KEY_PATTERN.match(line) is not None
+
     def _clean_character_name(self, line: str) -> str:
         """Extract character name, removing parenthetical extension and dual dialogue caret."""
         if line.startswith("@"):
             line = line[1:].strip()
+        line = self._strip_full_line_emphasis(line)
         # Remove trailing parenthetical: e.g., "MOM (O.S.)" -> "MOM"
         name = re.sub(r"\s*\(.*?\)\s*$", "", line).strip()
         # Remove trailing caret for dual dialogue: e.g., "STEEL ^" -> "STEEL"
@@ -384,6 +446,18 @@ class FountainParser:
         elif name.endswith("^"):
             name = name[:-1].strip()
         return name
+
+    def _strip_full_line_emphasis(self, line: str) -> str:
+        """Remove Markdown emphasis when it wraps an entire character cue."""
+        stripped = line.strip()
+        for marker in ("**", "__", "*", "_"):
+            if (
+                stripped.startswith(marker)
+                and stripped.endswith(marker)
+                and len(stripped) > len(marker) * 2
+            ):
+                return stripped[len(marker) : -len(marker)].strip()
+        return line
 
     def _parse_scene_heading(self, line: str) -> tuple[str, str | None]:
         """Parse scene heading into location and time."""

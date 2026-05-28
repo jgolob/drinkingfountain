@@ -67,7 +67,9 @@ def transform_scene_heading(text: str, expand_int_ext: bool = True) -> str:
         # Preserve the whitespace after the marker if there was any
         matched_text = match.group(0)
         # Extract the part after the marker
-        after_marker = matched_text[len(match.group(1)):]  # includes period and whitespace
+        after_marker = matched_text[
+            len(match.group(1)) :
+        ]  # includes period and whitespace
         # Keep only whitespace characters (drop period if present)
         trailing_whitespace = "".join(c for c in after_marker if c.isspace())
         return replacement + trailing_whitespace

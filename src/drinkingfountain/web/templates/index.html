@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DrinkingFountain</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="app-shell">
+    <header class="topbar">
+        <div class="app-container">
+            <div>
+                <div class="brand-mark">DrinkingFountain</div>
+                <div class="brand-subtitle">Fountain Script &rarr; Audio Play</div>
+            </div>
+            <div class="topbar-status">
+                <span class="status-dot"></span>
+                Local renderer
+            </div>
+        </div>
+    </header>
+
+    <main class="app-container" id="app">
+        <section id="input-section" class="workspace-grid">
+            <form id="render-form" class="script-panel">
+                <div class="panel-heading">
+                    <h1>Script Input</h1>
+                    <span class="format-pill">.fountain</span>
+                </div>
+
+                <label for="script" class="form-label">Fountain Script</label>
+                <textarea class="form-control font-monospace script-editor" id="script" name="script"
+                          rows="16" placeholder="INT. COFFEE SHOP - DAY&#10;&#10;JOHN&#10;This is pretty good."></textarea>
+
+                <div class="upload-strip">
+                    <label for="script_file" class="form-label">Upload File</label>
+                    <input class="form-control" type="file" id="script_file" name="script_file" accept=".fountain,.txt">
+                </div>
+
+                <div class="primary-options">
+                    <label class="form-check">
+                        <input class="form-check-input" type="checkbox" name="live_preview"
+                               id="live_preview" checked>
+                        <span>Live Preview</span>
+                    </label>
+                    <label class="form-check">
+                        <input class="form-check-input" type="checkbox" name="create_download"
+                               id="create_download">
+                        <span>Create Download</span>
+                    </label>
+                </div>
+
+                <div class="config-panel" id="config-accordion">
+                    <details class="config-section">
+                        <summary>Audio Settings</summary>
+                        <div class="config-body">
+                            <div class="control-grid">
+                                <div>
+                                    <label class="form-label">Download Name</label>
+                                    <input type="text" class="form-control" name="output_name"
+                                           value="drinkingfountain-render" placeholder="table-read">
+                                </div>
+                                <div>
+                                    <label class="form-label">Sample Rate</label>
+                                    <input type="hidden" name="sample_rate" value="44100">
+                                    <div class="static-control">44100 Hz</div>
+                                </div>
+                                <div>
+                                    <label class="form-label">Channels</label>
+                                    <select class="form-select" name="channels">
+                                        <option value="mono" selected>Mono</option>
+                                        <option value="stereo">Stereo</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="form-label">Output Format</label>
+                                    <select class="form-select" name="output_format">
+                                        <option value="wav" selected>WAV</option>
+                                        <option value="mp3">MP3</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </details>
+
+                    <details class="config-section">
+                        <summary>Timing</summary>
+                        <div class="config-body control-grid">
+                            <div>
+                                <label class="form-label">Pause Between Lines (s)</label>
+                                <input type="number" class="form-control" name="pause_between_lines"
+                                       value="0.3" step="0.1" min="0">
+                            </div>
+                            <div>
+                                <label class="form-label">Pause After Scene Heading (s)</label>
+                                <input type="number" class="form-control" name="pause_after_scene_heading"
+                                       value="1.0" step="0.1" min="0">
+                            </div>
+                            <div>
+                                <label class="form-label">Pause Between Scenes (s)</label>
+                                <input type="number" class="form-control" name="pause_between_scenes"
+                                       value="2.0" step="0.1" min="0">
+                            </div>
+                        </div>
+                    </details>
+
+                    <details class="config-section">
+                        <summary>Narrator</summary>
+                        <div class="config-body">
+                            <div class="toggle-grid">
+                                <label class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="narrator_enabled"
+                                           id="narrator_enabled" checked>
+                                    <span>Enable Narrator</span>
+                                </label>
+                                <label class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="expand_int_ext"
+                                           id="expand_int_ext" checked>
+                                    <span>Expand INT/EXT</span>
+                                </label>
+                            </div>
+                            <label class="form-label">Narrator Voice</label>
+                            <select class="form-select" name="narrator_voice" id="narrator-voice-select">
+                                <option value="">Auto-select</option>
+                            </select>
+                        </div>
+                    </details>
+
+                    <details class="config-section">
+                        <summary>Character Voice Overrides</summary>
+                        <div class="config-body">
+                            <div id="voice-overrides"></div>
+                            <div id="voice-map-empty" class="voice-map-empty">
+                                Add a script to populate characters and suggested voices.
+                            </div>
+                            <button type="button" class="btn btn-outline-secondary add-override-btn"
+                                    id="add-voice-override">Add Override</button>
+                        </div>
+                    </details>
+                </div>
+
+                <div class="action-row">
+                    <button type="submit" class="btn btn-primary render-action" id="render-btn">
+                        <span id="render-btn-text">Render Audio</span>
+                        <span id="render-spinner" class="spinner-border d-none" role="status"></span>
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary d-none" id="new-render-btn">
+                        New Render
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary d-none" id="pause-render-btn">
+                        Pause
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary d-none" id="resume-render-btn">
+                        Resume
+                    </button>
+                    <button type="button" class="btn btn-outline-danger d-none" id="cancel-render-btn">
+                        Cancel
+                    </button>
+                </div>
+
+                <div id="error-display" class="alert alert-danger d-none"></div>
+
+                <div id="progress-panel" class="progress-panel d-none">
+                    <div class="progress-header">
+                        <div id="progress-stage">Queued</div>
+                        <div id="progress-percent">0%</div>
+                    </div>
+                    <div class="progress-track">
+                        <div id="progress-bar" class="progress-fill"></div>
+                    </div>
+                    <div id="progress-message" class="progress-message">Waiting to start.</div>
+                </div>
+            </form>
+
+            <aside id="results-section" class="results-panel d-none">
+                <div class="panel-heading">
+                    <div>
+                        <h2>Playback Script</h2>
+                        <p id="result-title"></p>
+                    </div>
+                </div>
+                <div id="live-playback-layout" class="live-playback-layout d-none">
+                    <section class="live-now-panel">
+                        <div class="mini-heading">Being Read</div>
+                        <div id="live-now-scene" class="live-now-scene">Waiting for audio.</div>
+                        <div id="live-now-line" class="live-now-line">The current line will appear here as playback moves.</div>
+                        <div id="live-script-context" class="live-script-context"></div>
+                    </section>
+                    <section class="scene-nav-panel">
+                        <div class="mini-heading">Scenes</div>
+                        <div id="scene-list"></div>
+                    </section>
+                </div>
+                <div id="script-display"></div>
+            </aside>
+        </section>
+    </main>
+
+    <div id="audio-player-bar" class="d-none">
+        <div class="app-container player-inner">
+            <div class="player-label">Rendered Audio</div>
+            <audio id="audio-player" controls></audio>
+            <a id="download-link" class="btn btn-download d-none" href="#">Download</a>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
