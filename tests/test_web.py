@@ -19,10 +19,14 @@ class FakeTTSBackend(TTSBackend):
     """Small fake backend for web route tests."""
 
     def __init__(
-        self, voices: list[str] | None = None, max_text_length: int = 500
+        self,
+        voices: list[str] | None = None,
+        max_text_length: int = 500,
+        voices_dir: Path | None = None,
     ) -> None:
         self.voices = voices if voices is not None else ["voice1", "voice2"]
         self.max_text_length = max_text_length
+        self.voices_dir = voices_dir
 
     def generate_audio(self, text: str, voice: str) -> AudioSegment:
         return AudioSegment.silent(duration=100, frame_rate=22050)
@@ -199,9 +203,10 @@ def test_render_endpoint_returns_urls(
                 ],
             )
 
-    monkeypatch.setattr("drinkingfountain.web.app.PiperTTSBackend", FakeTTSBackend)
+    monkeypatch.setattr("drinkingfountain.tts.PiperTTSBackend", FakeTTSBackend)
     monkeypatch.setattr(
-        "drinkingfountain.web.app.CachedTTSBackend", lambda piper: piper
+        "drinkingfountain.tts.CachedTTSBackend",
+        lambda piper, cache_dir=None: piper,
     )
     monkeypatch.setattr("drinkingfountain.web.app.RenderService", FakeRenderService)
     monkeypatch.setattr("drinkingfountain.web.app.RENDER_EXECUTOR", InlineExecutor())
@@ -277,9 +282,10 @@ def test_render_endpoint_uses_uploaded_file(
                 timing_blocks=[],
             )
 
-    monkeypatch.setattr("drinkingfountain.web.app.PiperTTSBackend", FakeTTSBackend)
+    monkeypatch.setattr("drinkingfountain.tts.PiperTTSBackend", FakeTTSBackend)
     monkeypatch.setattr(
-        "drinkingfountain.web.app.CachedTTSBackend", lambda piper: piper
+        "drinkingfountain.tts.CachedTTSBackend",
+        lambda piper, cache_dir=None: piper,
     )
     monkeypatch.setattr("drinkingfountain.web.app.RenderService", FakeRenderService)
     monkeypatch.setattr("drinkingfountain.web.app.RENDER_EXECUTOR", InlineExecutor())
@@ -351,9 +357,10 @@ def test_render_endpoint_prefers_textarea_over_uploaded_file(
                 timing_blocks=[],
             )
 
-    monkeypatch.setattr("drinkingfountain.web.app.PiperTTSBackend", FakeTTSBackend)
+    monkeypatch.setattr("drinkingfountain.tts.PiperTTSBackend", FakeTTSBackend)
     monkeypatch.setattr(
-        "drinkingfountain.web.app.CachedTTSBackend", lambda piper: piper
+        "drinkingfountain.tts.CachedTTSBackend",
+        lambda piper, cache_dir=None: piper,
     )
     monkeypatch.setattr("drinkingfountain.web.app.RenderService", FakeRenderService)
     monkeypatch.setattr("drinkingfountain.web.app.RENDER_EXECUTOR", InlineExecutor())
@@ -469,9 +476,10 @@ def test_live_preview_endpoint_returns_scene_audio(
                 ],
             )
 
-    monkeypatch.setattr("drinkingfountain.web.app.PiperTTSBackend", FakeTTSBackend)
+    monkeypatch.setattr("drinkingfountain.tts.PiperTTSBackend", FakeTTSBackend)
     monkeypatch.setattr(
-        "drinkingfountain.web.app.CachedTTSBackend", lambda piper: piper
+        "drinkingfountain.tts.CachedTTSBackend",
+        lambda piper, cache_dir=None: piper,
     )
     monkeypatch.setattr("drinkingfountain.web.app.RenderService", FakeRenderService)
     monkeypatch.setattr("drinkingfountain.web.app.LIVE_EXECUTOR", InlineExecutor())
@@ -557,9 +565,10 @@ def test_live_preview_skips_title_page_metadata(
                 ],
             )
 
-    monkeypatch.setattr("drinkingfountain.web.app.PiperTTSBackend", FakeTTSBackend)
+    monkeypatch.setattr("drinkingfountain.tts.PiperTTSBackend", FakeTTSBackend)
     monkeypatch.setattr(
-        "drinkingfountain.web.app.CachedTTSBackend", lambda piper: piper
+        "drinkingfountain.tts.CachedTTSBackend",
+        lambda piper, cache_dir=None: piper,
     )
     monkeypatch.setattr("drinkingfountain.web.app.RenderService", FakeRenderService)
     monkeypatch.setattr("drinkingfountain.web.app.LIVE_EXECUTOR", InlineExecutor())
@@ -602,7 +611,7 @@ def test_script_info_uses_parser_and_voice_manager(
 ) -> None:
     app = create_app()
     app.config["TESTING"] = True
-    monkeypatch.setattr("drinkingfountain.web.app.PiperTTSBackend", FakeTTSBackend)
+    monkeypatch.setattr("drinkingfountain.tts.PiperTTSBackend", FakeTTSBackend)
     monkeypatch.setattr(
         "drinkingfountain.voices.manager.random.choice",
         lambda voices: voices[0],
@@ -678,11 +687,12 @@ def test_render_endpoint_removes_temp_file_when_no_voices(
     temp_path = tmp_path / "df_render_test.wav"
 
     monkeypatch.setattr(
-        "drinkingfountain.web.app.PiperTTSBackend",
+        "drinkingfountain.tts.PiperTTSBackend",
         lambda max_text_length: FakeTTSBackend(voices=[]),
     )
     monkeypatch.setattr(
-        "drinkingfountain.web.app.CachedTTSBackend", lambda piper: piper
+        "drinkingfountain.tts.CachedTTSBackend",
+        lambda piper, cache_dir=None: piper,
     )
     monkeypatch.setattr("drinkingfountain.web.app.RENDER_EXECUTOR", InlineExecutor())
     monkeypatch.setattr(

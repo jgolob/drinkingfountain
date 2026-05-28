@@ -146,7 +146,7 @@ DrinkingFountain looks for configuration files in this order:
 Create `drinkingfountain.yaml`:
 
 ```yaml
-# TTS backend to use (currently only "piper" is implemented)
+# TTS backend to use. "piper" is implemented; "kokoro-onnx" is reserved for future support.
 backend: piper
 
 # Audio output settings
@@ -837,6 +837,7 @@ drinkingfountain/
 │   │   └── __init__.py
 │   ├── tts/
 │   │   ├── base.py         # TTS backend interface
+│   │   ├── factory.py      # Backend selection and provider registry
 │   │   ├── piper.py        # Piper TTS implementation
 │   │   ├── cache.py        # Caching wrapper
 │   │   └── __init__.py
@@ -862,7 +863,7 @@ drinkingfountain/
 2. **Parser** (`parser/fountain.py`): Reads Fountain files into `Script` objects
 3. **Config** (`config/settings.py`): Loads YAML configuration with validation
 4. **VoiceManager** (`voices/manager.py`): Maps characters to voice IDs
-5. **TTS Backend** (`tts/piper.py`): Generates audio via Piper, handles chunking
+5. **TTS Backend** (`tts/factory.py`, `tts/piper.py`): Selects a provider and generates audio
 6. **AudioMixer** (`audio/mixer.py`): Combines segments, adds pauses, normalizes, exports
 7. **Web UI** (`web/app.py`): Wraps the same services in local Flask routes and browser playback
 
@@ -878,7 +879,10 @@ class TTSBackend(Protocol):
     def generate_audio(self, text: str, voice: str) -> AudioSegment: ...
 ```
 
-Implement this protocol to add support for Coqui TTS, Transformers, or cloud services.
+Backend construction is centralized in `tts/factory.py`. Implement this protocol and
+register the provider there to add support for another local engine such as
+`kokoro-onnx`. Downloadable voice catalog features are intentionally optional so
+providers with bundled voices or non-Piper voice metadata can still support rendering.
 
 ---
 

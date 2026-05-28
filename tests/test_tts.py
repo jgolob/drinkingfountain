@@ -11,6 +11,11 @@ import pytest
 
 from drinkingfountain.tts.base import TTSBackend
 from drinkingfountain.tts.cache import CachedTTSBackend
+from drinkingfountain.tts.factory import (
+    BackendNotImplementedError,
+    create_cached_tts_backend,
+    create_tts_backend,
+)
 from drinkingfountain.tts.piper import PiperTTSBackend
 from drinkingfountain.voices.manager import VoiceManager
 
@@ -35,6 +40,31 @@ def make_mock_audio_segment(duration_ms: int = 100) -> MagicMock:
     # Mock export method
     audio.export = MagicMock()
     return audio
+
+
+class TestTTSBackendFactory:
+    """Tests for provider-neutral TTS backend construction."""
+
+    def test_create_tts_backend_defaults_to_piper(self) -> None:
+        backend = create_tts_backend()
+        assert isinstance(backend, PiperTTSBackend)
+
+    def test_create_tts_backend_normalizes_name(self) -> None:
+        backend = create_tts_backend(" PIPER ")
+        assert isinstance(backend, PiperTTSBackend)
+
+    def test_create_cached_tts_backend_wraps_backend(self, tmp_path: Path) -> None:
+        backend = create_cached_tts_backend("piper", cache_dir=tmp_path)
+        assert isinstance(backend, CachedTTSBackend)
+        assert isinstance(backend.backend, PiperTTSBackend)
+
+    def test_create_tts_backend_recognizes_future_kokoro_backend(self) -> None:
+        with pytest.raises(BackendNotImplementedError, match="kokoro-onnx"):
+            create_tts_backend("kokoro-onnx")
+
+    def test_create_tts_backend_rejects_unknown_backend(self) -> None:
+        with pytest.raises(ValueError, match="Unknown TTS backend"):
+            create_tts_backend("not-a-provider")
 
 
 class TestPiperTTSBackend:

@@ -285,8 +285,8 @@ Action line here.
     def patched_piper(self, mock_tts_instance):
         """Patch PiperTTSBackend and CachedTTSBackend to use the mock without caching."""
         with (
-            patch("drinkingfountain.cli.PiperTTSBackend") as mock_piper_class,
-            patch("drinkingfountain.cli.CachedTTSBackend") as mock_cached_class,
+            patch("drinkingfountain.tts.PiperTTSBackend") as mock_piper_class,
+            patch("drinkingfountain.tts.CachedTTSBackend") as mock_cached_class,
         ):
             mock_piper_class.return_value = mock_tts_instance
 

@@ -22,6 +22,12 @@ from drinkingfountain.config import Config
 from drinkingfountain.parser.fountain import FountainParser
 from drinkingfountain.parser.script import Action, Dialogue, Scene, Script
 from drinkingfountain.tts import CachedTTSBackend
+from drinkingfountain.tts.factory import (
+    DEFAULT_BACKEND,
+    create_cached_tts_backend,
+    create_tts_backend,
+    create_voice_catalog_backend,
+)
 from drinkingfountain.utils.narrator import transform_scene_heading
 from drinkingfountain.voices import VoiceManager
 
@@ -740,12 +746,16 @@ class VoiceService:
     downloading, and testing.
     """
 
-    def __init__(self, max_text_length: int = 500) -> None:
+    def __init__(
+        self, backend_name: str = DEFAULT_BACKEND, max_text_length: int = 500
+    ) -> None:
         """Initialize the voice service.
 
         Args:
-            max_text_length: Maximum text length for TTS synthesis (passed to Piper).
+            backend_name: TTS backend to use for voice operations.
+            max_text_length: Maximum text length for TTS synthesis.
         """
+        self.backend_name = backend_name
         self.max_text_length = max_text_length
 
     def list_voices(self, voices_dir: Path | None = None) -> list[str]:
@@ -758,14 +768,14 @@ class VoiceService:
             List of voice IDs (strings).
 
         Raises:
-            RuntimeError: If Piper TTS is not available.
+            RuntimeError: If the configured TTS backend is not available.
         """
-        from drinkingfountain.tts import PiperTTSBackend
-
-        piper = PiperTTSBackend(
-            voices_dir=voices_dir, max_text_length=self.max_text_length
+        backend = create_tts_backend(
+            self.backend_name,
+            voices_dir=voices_dir,
+            max_text_length=self.max_text_length,
         )
-        return piper.list_voices()
+        return backend.list_voices()
 
     def download_voice(self, voice: str, voices_dir: Path | None = None) -> None:
         """Download a voice model.
@@ -778,12 +788,12 @@ class VoiceService:
             RuntimeError: If download fails.
             FileNotFoundError: If voice not found in available list.
         """
-        from drinkingfountain.tts import PiperTTSBackend
-
-        piper = PiperTTSBackend(
-            voices_dir=voices_dir, max_text_length=self.max_text_length
+        backend = create_tts_backend(
+            self.backend_name,
+            voices_dir=voices_dir,
+            max_text_length=self.max_text_length,
         )
-        piper.download_voice(voice)
+        backend.download_voice(voice)
 
     def list_available_voices(
         self, output_format: str = "list", language: str | None = None
@@ -797,10 +807,10 @@ class VoiceService:
         Returns:
             List of voice IDs available for download.
         """
-        from drinkingfountain.tts import PiperTTSBackend
-
-        piper = PiperTTSBackend(max_text_length=self.max_text_length)
-        voices = piper.list_available_voices()
+        backend = create_voice_catalog_backend(
+            self.backend_name, max_text_length=self.max_text_length
+        )
+        voices = backend.list_available_voices()
         if language:
             voices = [v for v in voices if v.startswith(language + "-")]
         return voices
@@ -820,12 +830,11 @@ class VoiceService:
             FileNotFoundError: If the voice is not found.
             RuntimeError: If TTS synthesis fails.
         """
-        from drinkingfountain.tts import CachedTTSBackend, PiperTTSBackend
-
-        piper = PiperTTSBackend(
-            voices_dir=voices_dir, max_text_length=self.max_text_length
+        tts = create_cached_tts_backend(
+            self.backend_name,
+            voices_dir=voices_dir,
+            max_text_length=self.max_text_length,
         )
-        tts = CachedTTSBackend(piper)
 
         # Check if voice exists
         if voice not in tts.list_voices():

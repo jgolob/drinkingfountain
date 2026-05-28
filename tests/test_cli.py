@@ -70,7 +70,7 @@ class TestCLIBasic:
 class TestRenderCommand:
     """Test the render command."""
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     @patch("drinkingfountain.services.FountainParser")
     def test_render_missing_script(
         self, mock_parser: MagicMock, mock_piper: MagicMock, runner: CliRunner
@@ -83,7 +83,7 @@ class TestRenderCommand:
         assert "does not exist" in result.output
 
     @patch("drinkingfountain.services.StreamingAudioPlayer")
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     @patch("drinkingfountain.services.FountainParser")
     def test_render_no_output(
         self,
@@ -140,7 +140,7 @@ class TestRenderCommand:
             mock_player_class.assert_called_once()
             mock_player.finalize.assert_called_once()
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     @patch("drinkingfountain.services.FountainParser")
     def test_render_tts_not_available(
         self,
@@ -160,7 +160,7 @@ class TestRenderCommand:
             assert "Piper TTS is not available" in result.output
 
     @patch("drinkingfountain.cli.VoiceManager")
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     @patch("drinkingfountain.services.FountainParser")
     def test_render_success(
         self,
@@ -406,7 +406,7 @@ class TestVoicesCommand:
 class TestVoicesDownloadBulkCommand:
     """Test the voices download-bulk command."""
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     @patch("drinkingfountain.cli.Config")
     def test_voices_download_bulk_success(
         self,
@@ -424,6 +424,7 @@ class TestVoicesDownloadBulkCommand:
 
         # Mock piper instance
         mock_piper = MagicMock()
+        mock_piper.list_available_voices.return_value = []
         mock_piper.download_voices_by_language.return_value = (5, 0)
         mock_piper_class.return_value = mock_piper
 
@@ -463,7 +464,7 @@ class TestVoicesDownloadBulkCommand:
         # Progress callback should be provided
         assert call_args.kwargs["progress_callback"] is not None
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     @patch("drinkingfountain.cli.Config")
     def test_voices_download_bulk_with_failures(
         self,
@@ -479,6 +480,7 @@ class TestVoicesDownloadBulkCommand:
         mock_config_class.load.return_value = mock_config
 
         mock_piper = MagicMock()
+        mock_piper.list_available_voices.return_value = []
         mock_piper.download_voices_by_language.return_value = (3, 2)
         mock_piper_class.return_value = mock_piper
 
@@ -490,7 +492,7 @@ class TestVoicesDownloadBulkCommand:
         assert "Successfully downloaded: 3 voices" in result.output
         assert "Failed: 2 voices" in result.output
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     @patch("drinkingfountain.cli.Config")
     def test_voices_download_bulk_uses_config_defaults(
         self,
@@ -506,6 +508,7 @@ class TestVoicesDownloadBulkCommand:
         mock_config_class.load.return_value = mock_config
 
         mock_piper = MagicMock()
+        mock_piper.list_available_voices.return_value = []
         mock_piper.download_voices_by_language.return_value = (2, 0)
         mock_piper_class.return_value = mock_piper
 
@@ -526,7 +529,7 @@ class TestVoicesDownloadBulkCommand:
         assert call_args.kwargs["quality"] == "high"
         assert call_args.kwargs["max_workers"] == 5
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     @patch("drinkingfountain.cli.Config")
     def test_voices_download_bulk_cli_overrides_config(
         self,
@@ -542,6 +545,7 @@ class TestVoicesDownloadBulkCommand:
         mock_config_class.load.return_value = mock_config
 
         mock_piper = MagicMock()
+        mock_piper.list_available_voices.return_value = []
         mock_piper.download_voices_by_language.return_value = (1, 0)
         mock_piper_class.return_value = mock_piper
 
@@ -573,7 +577,7 @@ class TestVoicesDownloadBulkCommand:
         assert call_args.kwargs["quality"] == "high"
         assert call_args.kwargs["max_workers"] == 10
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     @patch("drinkingfountain.cli.Config")
     def test_voices_download_bulk_requires_language(
         self,
@@ -597,7 +601,7 @@ class TestVoicesDownloadBulkCommand:
         )
         mock_piper_class.assert_not_called()
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     @patch("drinkingfountain.cli.Config")
     def test_voices_download_bulk_stop_on_error(
         self,
@@ -613,6 +617,7 @@ class TestVoicesDownloadBulkCommand:
         mock_config_class.load.return_value = mock_config
 
         mock_piper = MagicMock()
+        mock_piper.list_available_voices.return_value = []
 
         # Simulate that download_voices_by_language raises when stop_on_error=True
         def raise_on_error(**kwargs):
@@ -636,7 +641,7 @@ class TestVoicesDownloadBulkCommand:
         assert result.exit_code == 1
         assert "Error:" in result.output
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     @patch("drinkingfountain.cli.Config")
     def test_voices_download_bulk_progress_callback(
         self,
@@ -653,6 +658,7 @@ class TestVoicesDownloadBulkCommand:
 
         # Create a mock that calls the progress callback
         mock_piper = MagicMock()
+        mock_piper.list_available_voices.return_value = []
         call_count = 0
 
         def mock_download(**kwargs):
@@ -676,7 +682,7 @@ class TestVoicesDownloadBulkCommand:
         assert "Progress: 2/3 voices downloaded..." in result.output
         assert "Progress: 3/3 voices downloaded..." in result.output
 
-    @patch("drinkingfountain.cli.PiperTTSBackend")
+    @patch("drinkingfountain.tts.PiperTTSBackend")
     @patch("drinkingfountain.cli.Config")
     def test_voices_download_bulk_keyboard_interrupt(
         self,
@@ -692,6 +698,7 @@ class TestVoicesDownloadBulkCommand:
         mock_config_class.load.return_value = mock_config
 
         mock_piper = MagicMock()
+        mock_piper.list_available_voices.return_value = []
         mock_piper.download_voices_by_language.side_effect = KeyboardInterrupt
         mock_piper_class.return_value = mock_piper
 
