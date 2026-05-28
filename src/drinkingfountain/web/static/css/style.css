@@ -104,7 +104,8 @@ body.app-shell {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(390px, 0.8fr);
     gap: 24px;
-    align-items: start;
+    align-items: stretch;
+    min-height: 0;
     padding: 14px 0 128px;
 }
 
@@ -117,13 +118,22 @@ body.app-shell {
 }
 
 .script-panel {
+    max-height: calc(100vh - 168px);
+    overflow-y: auto;
     padding: 24px;
 }
 
 .results-panel {
     position: sticky;
     top: 20px;
+    max-height: calc(100vh - 168px);
     overflow: hidden;
+}
+
+.results-panel.live-active {
+    display: grid;
+    max-height: calc(100vh - 168px);
+    grid-template-rows: auto minmax(0, 1fr);
 }
 
 .panel-heading {
@@ -166,7 +176,8 @@ body.app-shell {
 }
 
 .form-control,
-.form-select {
+.form-select,
+.static-control {
     display: block;
     width: 100%;
     min-height: 42px;
@@ -178,6 +189,13 @@ body.app-shell {
     background: #fffdf8;
     color: var(--ink);
     font: inherit;
+}
+
+.static-control {
+    display: flex;
+    align-items: center;
+    color: var(--accent-dark);
+    font-weight: 800;
 }
 
 .form-control:focus,
@@ -488,6 +506,58 @@ body.app-shell {
     background: #fffaf1;
 }
 
+.live-playback-layout {
+    display: grid;
+    min-height: 0;
+    grid-template-rows: minmax(170px, 0.45fr) minmax(260px, 1fr);
+    gap: 1px;
+    background: var(--line);
+}
+
+.live-now-panel,
+.scene-nav-panel {
+    min-height: 0;
+    overflow-y: auto;
+    padding: 18px;
+    background: #fffaf1;
+}
+
+.live-now-panel {
+    background: #f2faf8;
+}
+
+.mini-heading {
+    margin-bottom: 10px;
+    color: var(--muted);
+    font-size: 0.76rem;
+    font-weight: 900;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.live-now-scene {
+    margin-bottom: 14px;
+    color: var(--accent-dark);
+    font-size: 0.95rem;
+    font-weight: 900;
+    line-height: 1.35;
+    text-transform: uppercase;
+}
+
+.live-now-line {
+    padding: 14px 16px;
+    border: 1px solid #c8dedb;
+    border-radius: 8px;
+    background: #fffdf8;
+    color: #2f3b45;
+    font-size: 1rem;
+    line-height: 1.6;
+}
+
+#scene-list {
+    min-height: 0;
+}
+
 .script-block {
     position: relative;
     padding: 12px 14px;
@@ -532,23 +602,6 @@ body.app-shell {
 
 .live-scene-status {
     margin-top: 6px;
-}
-
-.live-scene-lines {
-    margin-top: 10px;
-    padding-left: 12px;
-    border-left: 2px solid #ded7ca;
-}
-
-.live-line {
-    padding: 8px 10px;
-    margin-top: 6px;
-    border-radius: 6px;
-}
-
-.live-line.active {
-    background: #fff2c9;
-    box-shadow: inset 3px 0 0 #d39a16;
 }
 
 .block-scene_heading .block-text {
@@ -630,7 +683,9 @@ body.app-shell {
         grid-template-columns: 1fr;
     }
 
+    .script-panel,
     .results-panel {
+        max-height: none;
         position: static;
     }
 

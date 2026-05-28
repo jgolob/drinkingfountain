@@ -1,5 +1,6 @@
 """Tests for the Flask web interface."""
 
+import socket
 import time
 from io import BytesIO
 from pathlib import Path
@@ -10,7 +11,7 @@ from pydub import AudioSegment
 from drinkingfountain.parser.script import Scene
 from drinkingfountain.services import RenderResult, TimingBlock, TimingMetrics
 from drinkingfountain.tts.base import TTSBackend
-from drinkingfountain.web import create_app
+from drinkingfountain.web import create_app, find_available_port
 from drinkingfountain.web.app import RenderStore, build_config_from_form, render_store
 
 
@@ -63,6 +64,20 @@ def test_build_config_from_form_uses_defaults_and_overrides() -> None:
     assert config.narrator.enabled is True
     assert config.narrator.expand_int_ext is True
     assert config.voices == {"JOHN": "voice1"}
+
+
+def test_find_available_port_skips_occupied_port() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        occupied_port = sock.getsockname()[1]
+        available_port = find_available_port(
+            host="127.0.0.1",
+            preferred_port=occupied_port,
+            search_limit=20,
+        )
+
+        assert available_port != occupied_port
+        assert occupied_port < available_port < occupied_port + 20
 
 
 def test_render_store_evicts_audio_file(tmp_path: Path) -> None:

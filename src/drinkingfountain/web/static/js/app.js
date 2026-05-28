@@ -11,6 +11,10 @@ document.addEventListener('DOMContentLoaded', function () {
     const resultsSection = document.getElementById('results-section');
     const resultTitle = document.getElementById('result-title');
     const scriptDisplay = document.getElementById('script-display');
+    const livePlaybackLayout = document.getElementById('live-playback-layout');
+    const liveNowScene = document.getElementById('live-now-scene');
+    const liveNowLine = document.getElementById('live-now-line');
+    const sceneList = document.getElementById('scene-list');
     const audioPlayerBar = document.getElementById('audio-player-bar');
     const audioPlayer = document.getElementById('audio-player');
     const downloadLink = document.getElementById('download-link');
@@ -165,6 +169,12 @@ document.addEventListener('DOMContentLoaded', function () {
         audioPlayer.pause();
         audioPlayer.removeAttribute('src');
         scriptDisplay.innerHTML = '';
+        sceneList.innerHTML = '';
+        livePlaybackLayout.classList.add('d-none');
+        scriptDisplay.classList.remove('d-none');
+        resultsSection.classList.remove('live-active');
+        liveNowScene.textContent = 'Waiting for audio.';
+        liveNowLine.textContent = 'The current line will appear here as playback moves.';
     });
 
     pauseRenderBtn.addEventListener('click', function () {
@@ -332,6 +342,10 @@ document.addEventListener('DOMContentLoaded', function () {
         resultTitle.textContent = data.script_title || 'Untitled';
         var durationMin = (data.duration / 60).toFixed(1);
         resultTitle.textContent += ' (' + durationMin + ' min)';
+        resultsSection.classList.remove('live-active');
+        livePlaybackLayout.classList.add('d-none');
+        scriptDisplay.classList.remove('d-none');
+        sceneList.innerHTML = '';
 
         audioPlayer.src = data.audio_url;
         audioPlayerBar.classList.remove('d-none');
@@ -358,12 +372,17 @@ document.addEventListener('DOMContentLoaded', function () {
         resultsSection.classList.remove('d-none');
         audioPlayerBar.classList.remove('d-none');
         downloadLink.classList.add('d-none');
+        resultsSection.classList.add('live-active');
+        scriptDisplay.classList.add('d-none');
+        livePlaybackLayout.classList.remove('d-none');
+        liveNowScene.textContent = 'Waiting for scene 1.';
+        liveNowLine.textContent = 'Rendering the first scene now.';
         renderLiveSceneList(data.scenes || []);
         audioPlayer.removeAttribute('src');
     }
 
     function renderLiveSceneList(scenes) {
-        scriptDisplay.innerHTML = '';
+        sceneList.innerHTML = '';
         scenes.forEach(function (scene) {
             const sceneEl = document.createElement('div');
             sceneEl.className = 'script-block live-scene';
@@ -371,18 +390,17 @@ document.addEventListener('DOMContentLoaded', function () {
             sceneEl.innerHTML =
                 '<div class="live-scene-kicker">Scene ' + (scene.index + 1) + '</div>' +
                 '<div class="block-text">' + escapeHtml(scene.heading || 'Untitled Scene') + '</div>' +
-                '<div class="live-scene-status">Queued</div>' +
-                '<div class="live-scene-lines"></div>';
+                '<div class="live-scene-status">Queued</div>';
             sceneEl.addEventListener('click', function () {
                 jumpToLiveScene(scene.index);
             });
-            scriptDisplay.appendChild(sceneEl);
+            sceneList.appendChild(sceneEl);
         });
     }
 
     function updateLiveSceneList(state) {
         (state.scenes || liveScenes).forEach(function (scene) {
-            const sceneEl = scriptDisplay.querySelector('[data-scene-index="' + scene.index + '"]');
+            const sceneEl = sceneList.querySelector('[data-scene-index="' + scene.index + '"]');
             if (!sceneEl) return;
             sceneEl.classList.toggle('active', scene.index === liveCurrentScene);
             sceneEl.classList.toggle('rendering', state.rendering_scene === scene.index);
@@ -398,31 +416,6 @@ document.addEventListener('DOMContentLoaded', function () {
                     status.textContent = 'Queued';
                 }
             }
-
-            const ready = liveReadyScenes[String(scene.index)];
-            const lines = sceneEl.querySelector('.live-scene-lines');
-            if (ready && lines && !lines.children.length) {
-                renderLiveTimingLines(lines, ready.timing || [], scene.index);
-            }
-        });
-    }
-
-    function renderLiveTimingLines(container, blocks, sceneIndex) {
-        blocks.forEach(function (block, idx) {
-            const el = document.createElement('div');
-            el.className = 'live-line block-' + block.type;
-            el.dataset.sceneIndex = sceneIndex;
-            el.dataset.start = block.start;
-            el.dataset.end = block.end;
-            el.dataset.index = idx;
-            if (block.type === 'dialogue') {
-                el.innerHTML =
-                    '<div class="block-character">' + escapeHtml(block.character || '') + '</div>' +
-                    '<div class="block-text">' + escapeHtml(block.text || '') + '</div>';
-            } else {
-                el.innerHTML = '<div class="block-text">' + escapeHtml(block.text || '') + '</div>';
-            }
-            container.appendChild(el);
         });
     }
 
@@ -431,6 +424,8 @@ document.addEventListener('DOMContentLoaded', function () {
         audioPlayer.pause();
         audioPlayer.removeAttribute('src');
         liveCurrentScene = sceneIndex;
+        liveNowScene.textContent = getSceneHeading(sceneIndex);
+        liveNowLine.textContent = 'Rendering this scene now.';
         fetch('/live/' + currentRenderId + '/play/' + sceneIndex, { method: 'POST' })
             .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
             .then(function (resp) {
@@ -455,6 +450,8 @@ document.addEventListener('DOMContentLoaded', function () {
         liveCurrentScene = sceneIndex;
         audioPlayer.src = ready.audio_url;
         audioPlayerBar.classList.remove('d-none');
+        liveNowScene.textContent = getSceneHeading(sceneIndex);
+        liveNowLine.textContent = 'Starting scene playback.';
         wireLiveSync(sceneIndex);
         audioPlayer.play().catch(function () {});
         updateLiveSceneList({ scenes: liveScenes, ready_scenes: liveReadyScenes });
@@ -483,25 +480,39 @@ document.addEventListener('DOMContentLoaded', function () {
             audioPlayer.removeEventListener('timeupdate', syncHandler);
         }
         syncHandler = function () {
-            const lines = scriptDisplay.querySelectorAll('.live-line[data-scene-index="' + sceneIndex + '"]');
+            const ready = liveReadyScenes[String(sceneIndex)];
+            const blocks = ready ? ready.timing || [] : [];
             let found = null;
-            for (let i = 0; i < lines.length; i++) {
-                const s = parseFloat(lines[i].dataset.start);
-                const e = parseFloat(lines[i].dataset.end);
+            for (let i = 0; i < blocks.length; i++) {
+                const s = parseFloat(blocks[i].start);
+                const e = parseFloat(blocks[i].end);
                 if (audioPlayer.currentTime >= s && audioPlayer.currentTime < e) {
-                    found = lines[i];
+                    found = blocks[i];
                     break;
                 }
             }
-            scriptDisplay.querySelectorAll('.live-line.active').forEach(function (line) {
-                line.classList.remove('active');
-            });
             if (found) {
-                found.classList.add('active');
-                found.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                showLiveLine(found);
             }
         };
         audioPlayer.addEventListener('timeupdate', syncHandler);
+    }
+
+    function showLiveLine(block) {
+        if (block.type === 'dialogue') {
+            liveNowLine.innerHTML =
+                '<div class="block-character">' + escapeHtml(block.character || '') + '</div>' +
+                '<div class="block-text">' + escapeHtml(block.text || '') + '</div>';
+        } else {
+            liveNowLine.innerHTML = '<div class="block-text">' + escapeHtml(block.text || '') + '</div>';
+        }
+    }
+
+    function getSceneHeading(sceneIndex) {
+        const scene = liveScenes.find(function (candidate) {
+            return candidate.index === sceneIndex;
+        });
+        return scene ? scene.heading || 'Untitled Scene' : 'Scene ' + (sceneIndex + 1);
     }
 
     function startDownloadRender() {

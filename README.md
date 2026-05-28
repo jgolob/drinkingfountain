@@ -126,7 +126,7 @@ drinkingfountain render script.fountain
 drinkingfountain-web
 ```
 
-Then open [http://127.0.0.1:5000](http://127.0.0.1:5000), paste or upload your Fountain script, and click **Render Audio**.
+Then open the local URL printed by the command, paste or upload your Fountain script, and click **Render Audio**.
 
 That's it! For more control, read on.
 
@@ -358,7 +358,9 @@ The server prints a local URL:
 Running on http://127.0.0.1:5000
 ```
 
-Open that URL in your browser. Stop the server with `Ctrl+C` in the terminal.
+Open that URL in your browser. If port `5000` is already in use, DrinkingFountain automatically starts on the next available local port and prints that URL instead. A `403 Forbidden` page at `127.0.0.1:5000` usually means another macOS service, commonly AirPlay Receiver, is answering on port `5000`; use the URL printed by `drinkingfountain-web`.
+
+Stop the server with `Ctrl+C` in the terminal.
 
 ### Rendering a Script
 
@@ -375,7 +377,7 @@ When rendering finishes, the page shows an audio player and a synchronized scrip
 
 Most form settings mirror the YAML configuration:
 
-- **Sample Rate**: `22050` or `44100` Hz. `22050` is usually best for Piper voices.
+- **Sample Rate**: fixed at `44100` Hz for browser playback compatibility.
 - **Channels**: `mono` or `stereo`. Mono is recommended for voice-only renders.
 - **Output Format**: `wav` or `mp3`. MP3 requires `ffmpeg`.
 - **Timing**: pause values are seconds and may be fractional, such as `0.25`.
