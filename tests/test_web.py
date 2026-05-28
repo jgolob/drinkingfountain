@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from pydub import AudioSegment
 
+from drinkingfountain.parser.script import Scene
 from drinkingfountain.services import RenderResult, TimingBlock, TimingMetrics
 from drinkingfountain.tts.base import TTSBackend
 from drinkingfountain.web import create_app
@@ -290,6 +291,81 @@ def test_render_endpoint_uses_uploaded_file(
     assert captured["script_text"] == uploaded_script
 
 
+def test_render_endpoint_prefers_textarea_over_uploaded_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    app = create_app()
+    app.config["TESTING"] = True
+    captured: dict[str, str] = {}
+
+    class FakeRenderService:
+        def __init__(
+            self,
+            config: object,
+            tts: object,
+            voice_mgr: object,
+            narrator_cfg: object,
+        ) -> None:
+            pass
+
+        def render_from_string(
+            self,
+            script_text: str,
+            output: str,
+            collect_timing: bool,
+            progress_callback=None,
+            control_callback=None,
+        ) -> RenderResult:
+            captured["script_text"] = script_text
+            Path(output).write_bytes(b"RIFF")
+            return RenderResult(
+                duration=0.5,
+                tts_calls=1,
+                script_title="Edited",
+                scene_count=1,
+                character_count=1,
+                dialogue_count=1,
+                timing=TimingMetrics(
+                    total_wall=0.1,
+                    parse_time=0.01,
+                    tts_time=0.02,
+                    tts_calls=1,
+                    output_time=0.03,
+                ),
+                output_path=Path(output),
+                timing_blocks=[],
+            )
+
+    monkeypatch.setattr("drinkingfountain.web.app.PiperTTSBackend", FakeTTSBackend)
+    monkeypatch.setattr(
+        "drinkingfountain.web.app.CachedTTSBackend", lambda piper: piper
+    )
+    monkeypatch.setattr("drinkingfountain.web.app.RenderService", FakeRenderService)
+    monkeypatch.setattr("drinkingfountain.web.app.RENDER_EXECUTOR", InlineExecutor())
+    monkeypatch.setattr(
+        "drinkingfountain.web.app.tempfile.NamedTemporaryFile",
+        lambda delete, suffix, prefix: _TempFile(tmp_path / f"{prefix}edited{suffix}"),
+    )
+
+    edited_script = "INT. EDITED - DAY\n\nJOHN\nUse the text box."
+    uploaded_script = "INT. UPLOAD - DAY\n\nMARY\nUse the stale upload."
+    response = app.test_client().post(
+        "/render",
+        data={
+            "script": edited_script,
+            "create_download": "on",
+            "script_file": (
+                BytesIO(uploaded_script.encode("utf-8")),
+                "uploaded.fountain",
+            ),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 202
+    assert captured["script_text"] == edited_script
+
+
 def test_live_preview_endpoint_returns_scene_audio(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -342,6 +418,42 @@ def test_live_preview_endpoint_returns_scene_audio(
                 ],
             )
 
+        def render_scene(
+            self,
+            scene: Scene,
+            output: str,
+            collect_timing: bool,
+            title: str | None = None,
+            progress_callback=None,
+            control_callback=None,
+        ) -> RenderResult:
+            Path(output).write_bytes(b"RIFF")
+            return RenderResult(
+                duration=0.5,
+                tts_calls=1,
+                script_title=title or "Live",
+                scene_count=1,
+                character_count=1,
+                dialogue_count=1,
+                timing=TimingMetrics(
+                    total_wall=0.1,
+                    parse_time=0.0,
+                    tts_time=0.02,
+                    tts_calls=1,
+                    output_time=0.03,
+                ),
+                output_path=Path(output),
+                timing_blocks=[
+                    TimingBlock(
+                        type="dialogue",
+                        text="Hello.",
+                        character="JOHN",
+                        start=0.0,
+                        end=0.5,
+                    )
+                ],
+            )
+
     monkeypatch.setattr("drinkingfountain.web.app.PiperTTSBackend", FakeTTSBackend)
     monkeypatch.setattr(
         "drinkingfountain.web.app.CachedTTSBackend", lambda piper: piper
@@ -374,6 +486,100 @@ def test_live_preview_endpoint_returns_scene_audio(
         state_payload["ready_scenes"]["0"]["audio_url"]
     )
     assert audio_response.status_code == 200
+
+
+def test_live_preview_skips_title_page_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    app = create_app()
+    app.config["TESTING"] = True
+    rendered_headings: list[str] = []
+
+    class FakeRenderService:
+        def __init__(
+            self,
+            config: object,
+            tts: object,
+            voice_mgr: object,
+            narrator_cfg: object,
+        ) -> None:
+            pass
+
+        def render_scene(
+            self,
+            scene: Scene,
+            output: str,
+            collect_timing: bool,
+            title: str | None = None,
+            progress_callback=None,
+            control_callback=None,
+        ) -> RenderResult:
+            rendered_headings.append(scene.heading.content)
+            Path(output).write_bytes(b"RIFF")
+            return RenderResult(
+                duration=0.5,
+                tts_calls=1,
+                script_title=title or "Live",
+                scene_count=1,
+                character_count=1,
+                dialogue_count=1,
+                timing=TimingMetrics(
+                    total_wall=0.1,
+                    parse_time=0.01,
+                    tts_time=0.02,
+                    tts_calls=1,
+                    output_time=0.03,
+                ),
+                output_path=Path(output),
+                timing_blocks=[
+                    TimingBlock(
+                        type="dialogue",
+                        text="Welcome.",
+                        character="CLAIRE",
+                        start=0.0,
+                        end=0.5,
+                    )
+                ],
+            )
+
+    monkeypatch.setattr("drinkingfountain.web.app.PiperTTSBackend", FakeTTSBackend)
+    monkeypatch.setattr(
+        "drinkingfountain.web.app.CachedTTSBackend", lambda piper: piper
+    )
+    monkeypatch.setattr("drinkingfountain.web.app.RenderService", FakeRenderService)
+    monkeypatch.setattr("drinkingfountain.web.app.LIVE_EXECUTOR", InlineExecutor())
+    monkeypatch.setattr(
+        "drinkingfountain.web.app.tempfile.NamedTemporaryFile",
+        lambda delete, suffix, prefix: _TempFile(tmp_path / f"{prefix}live{suffix}"),
+    )
+
+    response = app.test_client().post(
+        "/render",
+        data={
+            "script": (
+                "Title: FISSION EPISODE 101\n"
+                "Author: Jonathan Golob\n\n"
+                "# ACT I\n\n"
+                ".INT. FUKUSHIMA DAIICHI - DAY\n\n"
+                "CLAIRE\n"
+                "Welcome.\n"
+            ),
+            "live_preview": "on",
+        },
+    )
+
+    assert response.status_code == 202
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["scenes"] == [
+        {
+            "index": 0,
+            "source_scene_index": 0,
+            "heading": "INT. FUKUSHIMA DAIICHI - DAY",
+            "line_number": 6,
+        }
+    ]
+    assert rendered_headings == ["INT. FUKUSHIMA DAIICHI - DAY"]
 
 
 def test_script_info_uses_parser_and_voice_manager(

@@ -217,6 +217,13 @@ body.app-shell {
     margin: 0;
 }
 
+.primary-options {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin: 0 0 18px;
+}
+
 .config-panel {
     border: 1px solid var(--line);
     border-radius: 8px;
@@ -667,6 +674,7 @@ body.app-shell {
         width: 100%;
     }
 
+    .primary-options,
     .toggle-grid,
     .voice-override-row {
         grid-template-columns: 1fr;

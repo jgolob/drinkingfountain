@@ -20,7 +20,7 @@ from drinkingfountain.audio import AudioMixer, StreamingAudioPlayer, StreamingWA
 from drinkingfountain.audio import TimingConfig as MixerTimingConfig
 from drinkingfountain.config import Config
 from drinkingfountain.parser.fountain import FountainParser
-from drinkingfountain.parser.script import Action, Dialogue, Script
+from drinkingfountain.parser.script import Action, Dialogue, Scene, Script
 from drinkingfountain.tts import CachedTTSBackend
 from drinkingfountain.utils.narrator import transform_scene_heading
 from drinkingfountain.voices import VoiceManager
@@ -231,6 +231,34 @@ class RenderService:
             collect_timing,
             total_start,
             parse_time,
+            progress_callback,
+            control_callback,
+        )
+
+    def render_scene(
+        self,
+        scene: Scene,
+        output: str | Path | None = None,
+        collect_timing: bool = False,
+        title: str | None = None,
+        progress_callback: Callable[[dict[str, object]], None] | None = None,
+        control_callback: Callable[[], None] | None = None,
+    ) -> RenderResult:
+        """Render a single already-parsed scene without reparsing Fountain text."""
+        total_start = time.perf_counter()
+        script_obj = Script(
+            title=title,
+            scenes=[scene],
+            characters={
+                block.character for block in scene.blocks if isinstance(block, Dialogue)
+            },
+        )
+        return self._render_script(
+            script_obj,
+            output,
+            collect_timing,
+            total_start,
+            0.0,
             progress_callback,
             control_callback,
         )

@@ -53,6 +53,12 @@ class FountainParser:
     PARENTHETICAL_PATTERN = re.compile(r"^\([^)]+\)$")
     # Forced action: line starts with !
     FORCED_ACTION_PATTERN = re.compile(r"^!")
+    # Fountain title page metadata before the first scene.
+    TITLE_PAGE_KEY_PATTERN = re.compile(
+        r"^(title|credit|author|authors|source|draft date|date|contact|copyright|"
+        r"notes?|revision|revisions|about the author)\s*:",
+        re.IGNORECASE,
+    )
 
     def __init__(self) -> None:
         self.line_number = 0
@@ -107,6 +113,7 @@ class FountainParser:
         parentheticals: list[Parenthetical] = []
         prev_line_blank = True
         in_boneyard = False
+        in_title_page_value = False
 
         for raw_line in lines:
             self.line_number += 1
@@ -118,6 +125,7 @@ class FountainParser:
             if clean_line.strip() == "":
                 # Treat as blank line
                 prev_line_blank = True
+                in_title_page_value = False
                 if current_character and dialogue_lines:
                     self._flush_dialogue(
                         script,
@@ -147,8 +155,28 @@ class FountainParser:
                     in_boneyard = True
                     continue
 
+            if current_scene is None and self._is_title_page_key(stripped):
+                in_title_page_value = True
+                prev_line_blank = False
+                continue
+
+            if (
+                current_scene is None
+                and in_title_page_value
+                and not (
+                    prev_line_blank
+                    and (
+                        self._is_scene_heading(stripped)
+                        or self.FORCED_SCENE_PATTERN.match(stripped)
+                    )
+                )
+            ):
+                prev_line_blank = False
+                continue
+
             # Check for sections (#) and synopses (=) - ignore completely
             if stripped.startswith("#") or stripped.startswith("="):
+                in_title_page_value = False
                 continue
 
             # Check for page break (=== or more)
@@ -200,6 +228,7 @@ class FountainParser:
                 self._is_scene_heading(stripped)
                 or self.FORCED_SCENE_PATTERN.match(stripped)
             ):
+                in_title_page_value = False
                 # Remove forced dot if present for content and parsing
                 if stripped.startswith("."):
                     cleaned = stripped[1:].strip()
@@ -367,6 +396,7 @@ class FountainParser:
         """Check if line is a character name."""
         if not line:
             return False
+        line = self._strip_full_line_emphasis(line)
         # Forced characters are handled separately; return False for them here.
         # Strip any trailing parenthetical (e.g., "JOHN (O.S.)" -> "JOHN")
         name = line
@@ -399,10 +429,15 @@ class FountainParser:
             return False
         return self.PARENTHETICAL_PATTERN.fullmatch(line) is not None
 
+    def _is_title_page_key(self, line: str) -> bool:
+        """Check if a line is a Fountain title-page metadata key."""
+        return self.TITLE_PAGE_KEY_PATTERN.match(line) is not None
+
     def _clean_character_name(self, line: str) -> str:
         """Extract character name, removing parenthetical extension and dual dialogue caret."""
         if line.startswith("@"):
             line = line[1:].strip()
+        line = self._strip_full_line_emphasis(line)
         # Remove trailing parenthetical: e.g., "MOM (O.S.)" -> "MOM"
         name = re.sub(r"\s*\(.*?\)\s*$", "", line).strip()
         # Remove trailing caret for dual dialogue: e.g., "STEEL ^" -> "STEEL"
@@ -411,6 +446,18 @@ class FountainParser:
         elif name.endswith("^"):
             name = name[:-1].strip()
         return name
+
+    def _strip_full_line_emphasis(self, line: str) -> str:
+        """Remove Markdown emphasis when it wraps an entire character cue."""
+        stripped = line.strip()
+        for marker in ("**", "__", "*", "_"):
+            if (
+                stripped.startswith(marker)
+                and stripped.endswith(marker)
+                and len(stripped) > len(marker) * 2
+            ):
+                return stripped[len(marker) : -len(marker)].strip()
+        return line
 
     def _parse_scene_heading(self, line: str) -> tuple[str, str | None]:
         """Parse scene heading into location and time."""

@@ -16,7 +16,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 
 from drinkingfountain.config import Config
 from drinkingfountain.parser.fountain import FountainParser
-from drinkingfountain.parser.script import Action, Dialogue, Scene
+from drinkingfountain.parser.script import Dialogue, Scene
 from drinkingfountain.services import (
     RenderCancelled,
     RenderService,
@@ -606,6 +606,9 @@ live_render_store = LiveRenderStore()
 def get_script_text_from_request() -> str:
     """Get script text from textarea data or an uploaded file."""
     script_text = request.form.get("script", "").strip()
+    if script_text:
+        return script_text
+
     uploaded = request.files.get("script_file")
     if uploaded and uploaded.filename:
         script_text = uploaded.read().decode("utf-8", errors="replace").strip()
@@ -622,15 +625,9 @@ def build_download_name(name: str | None, audio_format: str) -> str:
     return f"{stem}.{audio_format}"
 
 
-def scene_to_fountain(scene: Scene) -> str:
-    """Serialize a parsed scene back to the Fountain subset the renderer uses."""
-    lines = [scene.heading.content, ""]
-    for block in scene.blocks:
-        if isinstance(block, Dialogue):
-            lines.extend([block.character, block.content, ""])
-        elif isinstance(block, Action):
-            lines.extend([block.content, ""])
-    return "\n".join(lines).strip() + "\n"
+def scene_has_dialogue(scene: Scene) -> bool:
+    """Return True when a scene has dialogue that can be rendered live."""
+    return any(isinstance(block, Dialogue) for block in scene.blocks)
 
 
 def make_renderer(config_obj: Config) -> RenderService:
@@ -740,15 +737,18 @@ def live_scene_job(
 
         parser = FountainParser()
         script_obj = parser.parse_string(entry["script_text"])
-        scene = script_obj.scenes[scene_index]
+        source_scene_index = int(
+            scenes[scene_index].get("source_scene_index", scene_index)
+        )
+        scene = script_obj.scenes[source_scene_index]
         tmp = tempfile.NamedTemporaryFile(
             delete=False, suffix=".wav", prefix=f"df_live_{live_id}_{scene_index}_"
         )
         tmp.close()
         output_path = Path(tmp.name)
         service = make_renderer(entry["config"])
-        result = service.render_from_string(
-            scene_to_fountain(scene),
+        result = service.render_scene(
+            scene,
             output=str(output_path),
             collect_timing=True,
             title=entry["script_title"],
@@ -924,19 +924,21 @@ def register_routes(app: Flask) -> None:
                 script_obj = parser.parse_string(script_text)
                 if not script_obj.scenes:
                     return jsonify({"error": "No scenes found in script."}), 400
-                if not any(
-                    isinstance(block, Dialogue)
-                    for scene in script_obj.scenes
-                    for block in scene.blocks
-                ):
+                renderable_scenes = [
+                    (source_idx, scene)
+                    for source_idx, scene in enumerate(script_obj.scenes)
+                    if scene_has_dialogue(scene)
+                ]
+                if not renderable_scenes:
                     return jsonify({"error": "No dialogue found in script."}), 400
                 scenes: list[dict[str, object]] = [
                     {
-                        "index": idx,
+                        "index": live_idx,
+                        "source_scene_index": source_idx,
                         "heading": scene.heading.content,
                         "line_number": scene.heading.line_number,
                     }
-                    for idx, scene in enumerate(script_obj.scenes)
+                    for live_idx, (source_idx, scene) in enumerate(renderable_scenes)
                 ]
             except Exception as e:
                 return jsonify({"error": str(e)}), 400
