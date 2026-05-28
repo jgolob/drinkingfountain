@@ -109,6 +109,13 @@ body.app-shell {
     padding: 14px 0 128px;
 }
 
+.workspace-grid.live-workspace {
+    grid-template-columns:
+        minmax(320px, 0.82fr)
+        minmax(430px, 1fr)
+        minmax(210px, 0.42fr);
+}
+
 .script-panel,
 .results-panel {
     border: 1px solid var(--line);
@@ -132,6 +139,7 @@ body.app-shell {
 
 .results-panel.live-active {
     display: grid;
+    grid-column: 2 / 4;
     max-height: calc(100vh - 168px);
     grid-template-rows: auto minmax(0, 1fr);
 }
@@ -509,7 +517,7 @@ body.app-shell {
 .live-playback-layout {
     display: grid;
     min-height: 0;
-    grid-template-rows: minmax(170px, 0.45fr) minmax(260px, 1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(180px, 0.36fr);
     gap: 1px;
     background: var(--line);
 }
@@ -523,6 +531,8 @@ body.app-shell {
 }
 
 .live-now-panel {
+    display: grid;
+    grid-template-rows: auto auto auto minmax(0, 1fr);
     background: #f2faf8;
 }
 
@@ -552,6 +562,33 @@ body.app-shell {
     color: #2f3b45;
     font-size: 1rem;
     line-height: 1.6;
+}
+
+.live-script-context {
+    min-height: 0;
+    margin-top: 14px;
+    overflow-y: auto;
+    padding: 12px;
+    border: 1px solid #ded7ca;
+    border-radius: 8px;
+    background: #fffaf1;
+}
+
+.live-line {
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    transition:
+        background-color 0.15s,
+        border-color 0.15s,
+        box-shadow 0.15s;
+}
+
+.live-line.active {
+    border-color: #e1b84c;
+    background: var(--warn-soft);
+    box-shadow: inset 4px 0 0 #d39a16;
 }
 
 #scene-list {
@@ -602,6 +639,15 @@ body.app-shell {
 
 .live-scene-status {
     margin-top: 6px;
+}
+
+.scene-nav-panel .script-block {
+    padding: 10px;
+}
+
+.scene-nav-panel .block-text {
+    font-size: 0.82rem;
+    line-height: 1.35;
 }
 
 .block-scene_heading .block-text {
@@ -679,14 +725,21 @@ body.app-shell {
 }
 
 @media (max-width: 1080px) {
-    .workspace-grid {
+    .workspace-grid,
+    .workspace-grid.live-workspace {
         grid-template-columns: 1fr;
     }
 
     .script-panel,
     .results-panel {
+        grid-column: auto;
         max-height: none;
         position: static;
+    }
+
+    .live-playback-layout {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(320px, 1fr) minmax(220px, 0.6fr);
     }
 
     .control-grid {
