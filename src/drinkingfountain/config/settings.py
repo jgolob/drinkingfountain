@@ -9,6 +9,8 @@ from pathlib import Path
 
 import yaml
 
+from drinkingfountain.tts.factory import KNOWN_BACKENDS
+
 
 @dataclass
 class ProsodyConfig:
@@ -134,7 +136,8 @@ class Config:
     3. ~/.config/drinkingfountain/config.yaml (user config)
 
     Attributes:
-        backend: TTS backend to use ("piper", "coqui", or "transformers")
+        backend: TTS backend to use. "piper" is currently implemented;
+            "kokoro-onnx" is reserved for the next local backend.
         audio: Audio configuration settings
         timing: Timing and pause settings
         voices: Mapping of character names to voice IDs
@@ -346,7 +349,7 @@ class Config:
             )
 
         # Validate backend
-        valid_backends = ("piper", "coqui", "transformers")
+        valid_backends = KNOWN_BACKENDS
         if self.backend not in valid_backends:
             errors.append(
                 f"Invalid backend: {self.backend}. Must be one of {valid_backends}."

@@ -1,5 +1,6 @@
 """Abstract base class for TTS backends."""
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -59,4 +60,35 @@ class TTSBackend(Protocol):
         Returns:
             True if the backend can generate audio, False otherwise.
         """
+        ...
+
+
+@runtime_checkable
+class VoiceCatalogBackend(TTSBackend, Protocol):
+    """Protocol for backends with a discoverable voice catalog.
+
+    Some engines, such as Piper, expose a catalog of downloadable voice
+    model IDs. Others may use bundled voices, speaker embeddings, or external
+    reference audio. Keep catalog operations optional so render-time TTS stays
+    provider-neutral.
+    """
+
+    def list_available_voices(self) -> list[str]:
+        """Return voice IDs available outside the local voice store."""
+        ...
+
+
+@runtime_checkable
+class BulkDownloadVoiceCatalogBackend(VoiceCatalogBackend, Protocol):
+    """Protocol for catalog backends that can bulk-download voices."""
+
+    def download_voices_by_language(
+        self,
+        language: str,
+        quality: str | None = None,
+        max_workers: int = 3,
+        progress_callback: Callable[[int, int], None] | None = None,
+        stop_on_error: bool = False,
+    ) -> tuple[int, int]:
+        """Download all catalog voices for a language and optional quality."""
         ...

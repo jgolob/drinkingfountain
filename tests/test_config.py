@@ -139,7 +139,7 @@ class TestConfig:
     def test_load_basic_config(self):
         """Test loading simple configuration."""
         yaml_content = """
-backend: coqui
+backend: kokoro-onnx
 audio:
   sample_rate: 44100
   channels: stereo
@@ -150,7 +150,7 @@ audio:
 
         try:
             config = Config.load(path=temp_path)
-            assert config.backend == "coqui"
+            assert config.backend == "kokoro-onnx"
             assert config.audio.sample_rate == 44100
             assert config.audio.channels == "stereo"
             # Defaults for unspecified values
@@ -162,7 +162,7 @@ audio:
     def test_load_full_config(self):
         """Test loading full configuration with all sections."""
         yaml_content = """
-backend: transformers
+backend: piper
 audio:
   sample_rate: 22050
   channels: mono
@@ -192,7 +192,7 @@ prosody:
             config = Config.load(path=temp_path)
 
             # Check backend
-            assert config.backend == "transformers"
+            assert config.backend == "piper"
 
             # Check audio
             assert config.audio.sample_rate == 22050

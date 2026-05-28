@@ -13,7 +13,11 @@ import yaml
 
 from drinkingfountain.config import Config
 from drinkingfountain.services import RenderService, VoiceService
-from drinkingfountain.tts import CachedTTSBackend, PiperTTSBackend
+from drinkingfountain.tts.factory import (
+    create_bulk_voice_catalog_backend,
+    create_cached_tts_backend,
+    create_tts_backend,
+)
 from drinkingfountain.voices import VoiceManager
 
 
@@ -146,15 +150,23 @@ def render(
 
         # Initialize TTS backend
         logger.info("Initializing TTS backend...")
-        piper = PiperTTSBackend(voices_dir=voices_dir_path, max_text_length=500)
-        tts = CachedTTSBackend(piper, cache_dir=cache_dir_path)
+        tts = create_cached_tts_backend(
+            config_obj.backend,
+            voices_dir=voices_dir_path,
+            cache_dir=cache_dir_path,
+            max_text_length=500,
+        )
 
         if not tts.is_available():
+            backend_label = (
+                "Piper TTS"
+                if config_obj.backend == "piper"
+                else f"TTS backend '{config_obj.backend}'"
+            )
             click.echo(
-                "Error: Piper TTS is not available. Please install piper-tts:\n"
-                "  pip install piper-tts\n"
+                f"Error: {backend_label} is not available.\n"
                 "\n"
-                "And download at least one voice model:\n"
+                "Install the backend dependencies and download at least one voice model:\n"
                 "  drinkingfountain voices download <voice_id>",
                 err=True,
             )
@@ -247,12 +259,13 @@ def voices_list(voices_dir: str | None) -> None:
         voices = service.list_voices(voices_dir_path)
 
         if not voices:
-            # Show search directory by instantiating PiperTTSBackend
-            from drinkingfountain.tts import PiperTTSBackend
-
-            piper = PiperTTSBackend(voices_dir=voices_dir_path, max_text_length=500)
+            backend = create_tts_backend(
+                voices_dir=voices_dir_path, max_text_length=500
+            )
+            search_dir = getattr(backend, "voices_dir", None)
             click.echo("No voice models found.")
-            click.echo(f"Search directory: {piper.voices_dir}")
+            if search_dir is not None:
+                click.echo(f"Search directory: {search_dir}")
             click.echo(
                 "\nDownload a voice with: drinkingfountain voices download <voice_id>"
             )
@@ -281,10 +294,9 @@ def voices_download(voice: str, voices_dir: str | None) -> None:
         click.echo(f"Downloading voice '{voice}'...")
         service.download_voice(voice, voices_dir_path)
         # Show download directory
-        from drinkingfountain.tts import PiperTTSBackend
-
-        piper = PiperTTSBackend(voices_dir=voices_dir_path, max_text_length=500)
-        click.echo(f"✓ Voice '{voice}' downloaded to {piper.voices_dir}")
+        backend = create_tts_backend(voices_dir=voices_dir_path, max_text_length=500)
+        download_dir = getattr(backend, "voices_dir", "the configured voice store")
+        click.echo(f"✓ Voice '{voice}' downloaded to {download_dir}")
     except RuntimeError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -497,13 +509,13 @@ def voices_download_bulk(
 
         # Initialize TTS backend
         logger.info("Initializing TTS backend...")
-        piper = PiperTTSBackend(voices_dir=None, max_text_length=500)
-        tts = CachedTTSBackend(piper)
+        backend = create_bulk_voice_catalog_backend(
+            config_obj.backend, max_text_length=500
+        )
 
-        if not tts.is_available():
+        if not backend.is_available():
             click.echo(
-                "Error: Piper TTS is not available. Please install piper-tts:\n"
-                "  pip install piper-tts\n",
+                f"Error: TTS backend '{config_obj.backend}' is not available.\n",
                 err=True,
             )
             ctx.exit(1)
@@ -524,7 +536,7 @@ def voices_download_bulk(
         click.echo(f"Max concurrent workers: {max_workers_val}")
         click.echo(f"Stop on error: {stop_on_error}")
 
-        success_count, failure_count = piper.download_voices_by_language(
+        success_count, failure_count = backend.download_voices_by_language(
             language=bulk_lang,
             quality=quality_val,
             max_workers=max_workers_val,

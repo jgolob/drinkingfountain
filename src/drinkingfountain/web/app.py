@@ -23,7 +23,7 @@ from drinkingfountain.services import (
     TimingBlock,
     VoiceService,
 )
-from drinkingfountain.tts import CachedTTSBackend, PiperTTSBackend
+from drinkingfountain.tts.factory import create_cached_tts_backend, create_tts_backend
 from drinkingfountain.voices import VoiceManager
 
 logger = logging.getLogger(__name__)
@@ -632,8 +632,7 @@ def scene_has_dialogue(scene: Scene) -> bool:
 
 def make_renderer(config_obj: Config) -> RenderService:
     """Build a render service with configured voices for web jobs."""
-    piper = PiperTTSBackend(max_text_length=500)
-    tts = CachedTTSBackend(piper)
+    tts = create_cached_tts_backend(config_obj.backend, max_text_length=500)
     if not tts.list_voices():
         raise RuntimeError(
             "No voice models installed. Use 'drinkingfountain voices download <voice_id>' to install one."
@@ -845,11 +844,11 @@ def register_routes(app: Flask) -> None:
     @app.route("/api/health")
     def health():  # type: ignore[no-untyped-def]
         try:
-            piper = PiperTTSBackend(max_text_length=500)
-            available = len(piper.list_voices()) > 0
+            backend = create_tts_backend(max_text_length=500)
+            available = len(backend.list_voices()) > 0
         except Exception:
             available = False
-        return jsonify({"status": "healthy", "piper_available": available})
+        return jsonify({"status": "healthy", "tts_available": available})
 
     @app.route("/api/voices")
     def voices():  # type: ignore[no-untyped-def]
@@ -871,13 +870,13 @@ def register_routes(app: Flask) -> None:
             script_obj = parser.parse_string(script_text)
             characters = sorted(script_obj.characters)
 
-            piper = PiperTTSBackend(max_text_length=500)
-            voice_mgr = VoiceManager(piper)
+            backend = create_tts_backend(max_text_length=500)
+            voice_mgr = VoiceManager(backend)
             narrator_voice = request.form.get("narrator_voice", "").strip()
             if narrator_voice:
                 voice_mgr.set_narrator_voice(narrator_voice)
 
-            voices = sorted(piper.list_voices())
+            voices = sorted(backend.list_voices())
             assignments: dict[str, str] = {}
             for character in characters:
                 try:
