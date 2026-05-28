@@ -154,6 +154,10 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     newRenderBtn.addEventListener('click', function () {
+        resetToEditMode();
+    });
+
+    function resetToEditMode() {
         resultsSection.classList.add('d-none');
         audioPlayerBar.classList.add('d-none');
         downloadLink.classList.add('d-none');
@@ -163,6 +167,7 @@ document.addEventListener('DOMContentLoaded', function () {
         window.clearTimeout(progressTimer);
         currentRenderId = null;
         currentProgressUrl = null;
+        currentMode = 'file';
         liveStateUrl = null;
         liveReadyScenes = {};
         liveScenes = [];
@@ -179,7 +184,7 @@ document.addEventListener('DOMContentLoaded', function () {
         liveNowScene.textContent = 'Waiting for audio.';
         liveNowLine.textContent = 'The current line will appear here as playback moves.';
         liveScriptContext.innerHTML = '';
-    });
+    }
 
     pauseRenderBtn.addEventListener('click', function () {
         sendRenderControl('pause');
@@ -248,8 +253,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     renderBtn.disabled = false;
                     renderBtnText.textContent = 'Render Audio';
                     renderSpinner.classList.add('d-none');
-                    newRenderBtn.classList.remove('d-none');
-                    setRenderControls('cancelled');
+                    resetToEditMode();
                     return;
                 }
 
@@ -289,8 +293,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     renderBtn.disabled = false;
                     renderBtnText.textContent = 'Render Audio';
                     renderSpinner.classList.add('d-none');
-                    newRenderBtn.classList.remove('d-none');
-                    setRenderControls('cancelled');
+                    resetToEditMode();
                     return;
                 }
 
